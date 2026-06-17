@@ -1,0 +1,8 @@
+# Binaries
+/kv
+/kv.exe
+
+# Go test artifacts
+*.test
+*.out
+cover.out
