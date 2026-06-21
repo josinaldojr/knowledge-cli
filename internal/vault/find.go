@@ -1,7 +1,9 @@
 package vault
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +79,39 @@ func FindVault(startDir string) (*FindResult, error) {
 				}, nil
 			}
 			return nil, fmt.Errorf(".knowledge-vault points to an invalid Knowledge Vault. Expected marker '.kv-vault' at: %s", candidate)
+		}
+
+		// Fallback workspace marker: .kv/config.json (legacy/TS CLI format)
+		kvConfigJson := filepath.Join(current, ".kv", "config.json")
+		if fsutil.IsFile(kvConfigJson) {
+			data, err := ioutil.ReadFile(kvConfigJson)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read TS config file at %s: %v", kvConfigJson, err)
+			}
+			var cfg struct {
+				VaultPath string `json:"vaultPath"`
+			}
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				return nil, fmt.Errorf("failed to parse TS config JSON at %s: %v", kvConfigJson, err)
+			}
+			cfg.VaultPath = strings.TrimSpace(cfg.VaultPath)
+			if cfg.VaultPath == "" {
+				return nil, fmt.Errorf(".kv/config.json at %s is empty or missing vaultPath", kvConfigJson)
+			}
+
+			candidate, err := workspace.ResolvePathSafe(current, cfg.VaultPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve path in TS config %s: %v", kvConfigJson, err)
+			}
+
+			if IsValidVault(candidate) {
+				return &FindResult{
+					Path:       candidate,
+					Source:     "marker",
+					MarkerPath: kvConfigJson,
+				}, nil
+			}
+			return nil, fmt.Errorf(".kv/config.json points to an invalid Knowledge Vault. Expected marker '.kv-vault' at: %s", candidate)
 		}
 
 		// 3. Current directory itself may be the vault

@@ -44,7 +44,14 @@ func Init(vaultRawPath string) error {
 		return fmt.Errorf("failed to write marker file: %v", err)
 	}
 
-	// 5. Display output
+	// 5. Copy OpenCode templates
+	fmt.Println("Installing OpenCode workspace templates...")
+	if err := copyOpencodeTemplates(cwd); err != nil {
+		return fmt.Errorf("failed to copy OpenCode templates: %v", err)
+	}
+	fmt.Println()
+
+	// 6. Display output
 	fmt.Printf("Workspace initialized.\n\n")
 	fmt.Printf("Workspace:       %s\n", cwd)
 	fmt.Printf("Vault resolved:  %s\n", absVault)
@@ -56,5 +63,41 @@ func Init(vaultRawPath string) error {
 	}
 	fmt.Printf("Marker content:  %s\n", writePath)
 
+	return nil
+}
+
+// copyOpencodeTemplates writes all the OpenCode templates to .opencode/ folder if they don't already exist.
+func copyOpencodeTemplates(cwd string) error {
+	opencodeDir := filepath.Join(cwd, ".opencode")
+	if err := fsutil.EnsureDir(opencodeDir); err != nil {
+		return err
+	}
+
+	files := map[string]string{
+		"opencode.json":            OpencodeJsonTemplate,
+		"AGENTS.md":                AgentsMdTemplate,
+		"commands/kv-plan.md":      CommandPlanTemplate,
+		"commands/kv-implement.md": CommandImplementTemplate,
+		"commands/kv-review.md":    CommandReviewTemplate,
+		"commands/kv-sync.md":      CommandSyncTemplate,
+		"agents/architect.md":      AgentArchitectTemplate,
+		"agents/backend.md":        AgentBackendTemplate,
+		"agents/frontend.md":       AgentFrontendTemplate,
+		"agents/knowledge.md":      AgentKnowledgeTemplate,
+		"agents/orchestrator.md":   AgentOrchestratorTemplate,
+		"agents/reviewer.md":       AgentReviewerTemplate,
+	}
+
+	for relPath, content := range files {
+		targetPath := filepath.Join(opencodeDir, relPath)
+		if fsutil.Exists(targetPath) {
+			fmt.Printf("[SKIP] %s (already exists)\n", filepath.Join(".opencode", relPath))
+		} else {
+			if err := fsutil.WriteFile(targetPath, []byte(content), 0644); err != nil {
+				return err
+			}
+			fmt.Printf("[CREATE] %s\n", filepath.Join(".opencode", relPath))
+		}
+	}
 	return nil
 }
