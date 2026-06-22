@@ -451,7 +451,7 @@ func main() {
 }
 
 func printGeneralUsage() {
-	fmt.Println("kv - AI Development Harness inspired by Compozy")
+	fmt.Println("kv - AI Development Harness")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  kv <command> [arguments]")

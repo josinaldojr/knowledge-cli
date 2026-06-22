@@ -1,6 +1,6 @@
 # kv - AI Development Harness (Vault-Native)
 
-O `kv` é uma ferramenta CLI local-first e markdown-first escrita em Go, inspirada conceitualmente no Compozy, que funciona como um harness de desenvolvimento assistido por IA. Ele permite orquestrar contexto, gerenciar workflows versionáveis, estruturar tasks com schemas baseados em frontmatter YAML, compilar context packs enriquecidos e integrar execuções diretamente com runners (como o **OpenCode**).
+O `kv` é uma ferramenta CLI local-first e markdown-first escrita em Go que funciona como um harness de desenvolvimento assistido por IA. Ele permite orquestrar contexto, gerenciar workflows versionáveis, estruturar tasks com schemas baseados em frontmatter YAML, compilar context packs enriquecidos e integrar execuções diretamente com runners (como o **OpenCode**).
 
 Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) compartilhado para cruzar decisões de arquitetura (ADRs), runbooks e padrões organizacionais com o código fonte do repositório local.
 
