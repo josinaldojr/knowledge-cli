@@ -4,11 +4,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
-	"kv/internal/vault"
-	"kv/internal/workspace"
+	"kv/internal/context"
+	"kv/internal/fsutil"
 	"kv/internal/opencode"
+	"kv/internal/runner"
+	"kv/internal/task"
+	"kv/internal/vault"
+	"kv/internal/workflow"
+	"kv/internal/workspace"
 )
 
 func main() {
@@ -31,15 +37,55 @@ func main() {
 		if err != nil {
 			os.Exit(1)
 		}
-		if *vaultPathPtr == "" {
-			fmt.Fprintln(os.Stderr, "Error: Missing required --vault flag.")
-			printWorkspaceUsage()
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
 			os.Exit(1)
 		}
-		err = workspace.Init(*vaultPathPtr)
+
+		cfg := &workspace.Config{
+			VaultPath: "",
+		}
+
+		if *vaultPathPtr != "" {
+			absVault, err := fsutil.ResolveAbs(*vaultPathPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to resolve vault path: %v\n", err)
+				os.Exit(1)
+			}
+			if !vault.IsValidVault(absVault) {
+				fmt.Fprintf(os.Stderr, "Error: '%s' is not a valid Knowledge Vault (missing .kv-vault file)\n", absVault)
+				os.Exit(1)
+			}
+			relPath, err := filepath.Rel(cwd, absVault)
+			if err != nil {
+				cfg.VaultPath = absVault
+			} else {
+				cfg.VaultPath = filepath.Clean(relPath)
+			}
+		}
+
+		err = workspace.SaveConfig(cwd, cfg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: failed to initialize workspace: %v\n", err)
 			os.Exit(1)
+		}
+
+		// Create workflows directory
+		workflowsDir := filepath.Join(cwd, workspace.ConfigDirName, "workflows")
+		if err := os.MkdirAll(workflowsDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to create workflows directory: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Write legacy marker and copy opencode templates
+		_, _ = workspace.WriteMarker(cwd, cfg.VaultPath)
+		_ = workspace.Init(cfg.VaultPath)
+
+		fmt.Printf("Workspace initialized successfully under %s/.kv\n", cwd)
+		if cfg.VaultPath != "" {
+			fmt.Printf("Attached vault: %s\n", cfg.VaultPath)
 		}
 
 	case "find":
@@ -84,15 +130,40 @@ func main() {
 
 	case "context":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Error: Missing task description.")
-			fmt.Fprintln(os.Stderr, "Usage: kv context <task>")
+			printContextUsage()
 			os.Exit(1)
 		}
-		task := os.Args[2]
-		err := vault.GenerateContext(task)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		if os.Args[2] == "build" {
+			if len(os.Args) < 5 {
+				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
+				fmt.Fprintln(os.Stderr, "Usage: kv context build <workflow-slug> <task-id>")
+				os.Exit(1)
+			}
+			slug := os.Args[3]
+			taskID := os.Args[4]
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			err = context.BuildContext(wsDir, slug, taskID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Context generated successfully under .opencode/context.md\n")
+		} else {
+			task := os.Args[2]
+			err := vault.GenerateContext(task)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 	case "vault":
@@ -102,6 +173,59 @@ func main() {
 		}
 		subCommand := os.Args[2]
 		switch subCommand {
+		case "attach":
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "Error: Missing vault path.")
+				fmt.Fprintln(os.Stderr, "Usage: kv vault attach <path>")
+				os.Exit(1)
+			}
+			vaultPath := os.Args[3]
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			absVault, err := fsutil.ResolveAbs(vaultPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if !vault.IsValidVault(absVault) {
+				fmt.Fprintf(os.Stderr, "Error: '%s' is not a valid Knowledge Vault (missing .kv-vault file)\n", absVault)
+				os.Exit(1)
+			}
+
+			cfg, err := workspace.LoadConfig(wsDir)
+			if err != nil {
+				cfg = &workspace.Config{}
+			}
+
+			relPath, err := filepath.Rel(wsDir, absVault)
+			if err != nil {
+				cfg.VaultPath = absVault
+			} else {
+				cfg.VaultPath = filepath.Clean(relPath)
+			}
+
+			err = workspace.SaveConfig(wsDir, cfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to save config: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Update legacy marker too
+			_, _ = workspace.WriteMarker(wsDir, cfg.VaultPath)
+
+			fmt.Printf("Vault attached successfully: %s\n", cfg.VaultPath)
+
 		case "init":
 			if len(os.Args) < 4 {
 				fmt.Fprintln(os.Stderr, "Error: Missing path for vault init.")
@@ -168,9 +292,120 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
+
+			// Also create config.yaml for backwards compatibility
+			cwd, err := os.Getwd()
+			if err == nil {
+				absVault, err := fsutil.ResolveAbs(*vaultPathPtr)
+				if err == nil {
+					relPath, err := filepath.Rel(cwd, absVault)
+					var pathStr string
+					if err != nil {
+						pathStr = absVault
+					} else {
+						pathStr = filepath.Clean(relPath)
+					}
+					_ = workspace.SaveConfig(cwd, &workspace.Config{VaultPath: pathStr})
+				}
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown workspace subcommand '%s'\n", subCommand)
 			printWorkspaceUsage()
+			os.Exit(1)
+		}
+
+	case "workflow":
+		if len(os.Args) < 4 || os.Args[2] != "new" {
+			printWorkflowUsage()
+			os.Exit(1)
+		}
+		slug := os.Args[3]
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		wsDir, err := workspace.FindWorkspaceDir(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		err = workflow.NewWorkflow(wsDir, slug)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Workflow '%s' created successfully under %s/.kv/workflows/%s\n", slug, wsDir, slug)
+
+	case "task":
+		if len(os.Args) < 3 {
+			printTaskUsage()
+			os.Exit(1)
+		}
+		subCommand := os.Args[2]
+		switch subCommand {
+		case "enrich":
+			if len(os.Args) < 5 {
+				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
+				fmt.Fprintln(os.Stderr, "Usage: kv task enrich <workflow-slug> <task-id>")
+				os.Exit(1)
+			}
+			slug := os.Args[3]
+			taskID := os.Args[4]
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			err = task.EnrichTask(wsDir, slug, taskID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Task '%s' enriched successfully. Context pack generated.\n", taskID)
+
+		case "run":
+			if len(os.Args) < 5 {
+				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
+				fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>]")
+				os.Exit(1)
+			}
+			slug := os.Args[3]
+			taskID := os.Args[4]
+
+			fs := flag.NewFlagSet("task run", flag.ContinueOnError)
+			runnerPtr := fs.String("runner", "opencode", "Runner type (e.g. opencode)")
+			err := fs.Parse(os.Args[5:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			err = runner.RunTask(wsDir, slug, taskID, *runnerPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown task subcommand '%s'\n", subCommand)
+			printTaskUsage()
 			os.Exit(1)
 		}
 
@@ -210,18 +445,21 @@ func main() {
 }
 
 func printGeneralUsage() {
-	fmt.Println("kv - Knowledge Vault CLI manager")
+	fmt.Println("kv - AI Development Harness inspired by Compozy")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  kv <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Available commands:")
-	fmt.Println("  init --vault <path>  Alias for workspace init to connect a vault")
-	fmt.Println("  find <query>         Search files inside the active vault")
-	fmt.Println("  context <task>       Generate context.md inside .opencode/ workspace")
-	fmt.Println("  vault                Manage Knowledge Vault structure and paths")
-	fmt.Println("  workspace            Prepare or link your current workspace to a vault")
-	fmt.Println("  opencode             Install or inspect OpenCode agent commands integration")
+	fmt.Println("  init [--vault <path>] Initialize workspace with .kv/config.yaml")
+	fmt.Println("  find <query>          Search files inside the active vault")
+	fmt.Println("  context build <workflow> <task-id>  Generate .opencode/context.md from context pack")
+	fmt.Println("  vault                 Manage Knowledge Vault connections and creation")
+	fmt.Println("  workspace             Prepare or link workspace to a vault (legacy)")
+	fmt.Println("  workflow new <slug>   Create a versionable workflow directory")
+	fmt.Println("  task enrich <flow> <id>  Gather context, files, decisions and validation rules")
+	fmt.Println("  task run <flow> <id>    Run task utilizing specified runner adapter")
+	fmt.Println("  opencode              Install or inspect OpenCode agent commands integration")
 	fmt.Println()
 	fmt.Println("Use 'kv <command> --help' or 'kv <command> <subcommand>' for details.")
 }
@@ -231,17 +469,35 @@ func printVaultUsage() {
 	fmt.Println("  kv vault <subcommand> [arguments]")
 	fmt.Println()
 	fmt.Println("Subcommands:")
+	fmt.Println("  attach <path> Attach an external Knowledge Vault")
 	fmt.Println("  init <path>   Initialize a new Knowledge Vault structure at <path>")
-	fmt.Println("  path          Discover and print the active vault path from current directory")
+	fmt.Println("  path          Discover and print the active vault path")
 	fmt.Println("  doctor        Validate the health of the active vault")
 }
 
 func printWorkspaceUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  kv workspace init --vault <path>")
+}
+
+func printWorkflowUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv workflow new <slug>")
+}
+
+func printTaskUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv task <subcommand> [arguments]")
 	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  --vault <path>  The relative or absolute path of the target Knowledge Vault (must contain .kv-vault)")
+	fmt.Println("Subcommands:")
+	fmt.Println("  enrich <workflow-slug> <task-id> Compile context pack")
+	fmt.Println("  run <workflow-slug> <task-id> [--runner <runner>] Execute task")
+}
+
+func printContextUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv context build <workflow-slug> <task-id>")
+	fmt.Println("  kv context <legacy-task-query>")
 }
 
 func printOpenCodeUsage() {
@@ -249,8 +505,8 @@ func printOpenCodeUsage() {
 	fmt.Println("  kv opencode <subcommand>")
 	fmt.Println()
 	fmt.Println("Subcommands:")
-	fmt.Println("  install    Install global scripts (kv-find.ps1) and markdown commands templates to ~/.config/opencode")
-	fmt.Println("  doctor     Validate OpenCode workspace and commands configuration")
+	fmt.Println("  install    Install global scripts and templates")
+	fmt.Println("  doctor     Validate OpenCode workspace configuration")
 }
 
 func printVaultNotFoundMessage() {
@@ -259,9 +515,9 @@ func printVaultNotFoundMessage() {
 Run one of:
 
 kv vault init ./knowledge-vault
-kv workspace init --vault ./knowledge-vault
+kv init --vault ./knowledge-vault
 
-or link an existing vault:
+or attach an existing vault:
 
-kv workspace init --vault <path>`)
+kv vault attach <path>`)
 }

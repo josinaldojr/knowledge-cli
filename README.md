@@ -1,103 +1,141 @@
-# kv - CLI do Knowledge Vault
+# kv - AI Development Harness (Vault-Native)
 
-O `kv` é uma ferramenta CLI em Go desenvolvida para inicializar, linkar, descobrir, validar e instalar comandos relacionados a um **Knowledge Vault** (Cofre de Conhecimento) compartilhado, integrado com o editor **Obsidian** e o assistente de agentes **OpenCode**.
+O `kv` é uma ferramenta CLI local-first e markdown-first escrita em Go, inspirada conceitualmente no Compozy, que funciona como um harness de desenvolvimento assistido por IA. Ele permite orquestrar contexto, gerenciar workflows versionáveis, estruturar tasks com schemas baseados em frontmatter YAML, compilar context packs enriquecidos e integrar execuções diretamente com runners (como o **OpenCode**).
 
-Esta ferramenta soluciona o problema de sincronização e descoberta de caminhos do Knowledge Vault em novas máquinas ou diferentes workspaces.
+Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) compartilhado para cruzar decisões de arquitetura (ADRs), runbooks e padrões organizacionais com o código fonte do repositório local.
 
 ---
 
 ## Recursos Principais
 
-* **Descoberta Dinâmica de Vaults**: Localiza o cofre de conhecimento a partir do diretório de trabalho atual respeitando variáveis de ambiente (`KNOWLEDGE_VAULT_PATH`), arquivos marcadores locais (`.knowledge-vault`) ou subdiretórios padrão.
-* **Instalação para o OpenCode**: Provisiona automaticamente os comandos e scripts necessários em `~/.config/opencode`.
-* **Validação (Doctor)**: Garante a consistência estrutural tanto do cofre quanto das integrações globais do OpenCode.
+- **Vault-Native & Local-First**: Toda a configuração do workspace e dos workflows é versionável pelo Git (markdown-first).
+- **Workspace Config (`.kv/config.yaml`)**: Centraliza o apontamento para o Knowledge Vault externo de forma simples e direta.
+- **Workflows Versionáveis**: Organiza os fluxos de trabalho sob `.kv/workflows/<slug>/` gerando automaticamente artefatos base (`idea.md`, `prd.md`, `techspec.md`) e subpastas para `tasks`, `context`, `reviews` e `memory`.
+- **Schema de Tasks YAML**: Permite declarar metadados ricos em markdown/frontmatter para as tarefas (complexidade, dependências, runner, sources, critérios de aceitação).
+- **Enriquecimento de Tasks (`kv task enrich`)**: Gera um *Context Pack* compilando a definição da task, o conteúdo dos arquivos de código referenciados em `sources`, decisões de arquitetura e runbooks do vault e o plano de validação.
+- **Context Builder (`kv context build`)**: Compila o context pack ativamente gerando o arquivo `.opencode/context.md` que o OpenCode consome automaticamente como contexto.
+- **Task Runner (`kv task run`)**: Dispara a execução das tasks utilizando adapters (inicialmente suportando o runner `opencode`).
 
 ---
 
-## Instalação Local
+## Instalação
 
-Certifique-se de que possui o Go (versão 1.16 ou superior) instalado em sua máquina. Para compilar e instalar globalmente a CLI, execute:
+Certifique-se de ter o Go instalado (versão 1.16 ou superior). No diretório do projeto, execute:
 
-```powershell
+```bash
+go build -o kv ./cmd/kv
+```
+
+Ou instale globalmente no seu sistema:
+
+```bash
 go install ./cmd/kv
 ```
 
-*Nota: Garanta que o diretório `$GOPATH/bin` ou `~/go/bin` esteja adicionado à variável de ambiente `PATH` do seu sistema.*
+---
+
+## Guia de Uso
+
+### 1. Inicializar o Workspace
+No diretório raiz do seu repositório/projeto:
+
+```bash
+kv init
+```
+*Opcional: Você pode passar o parâmetro `--vault <caminho>` para já conectar o vault durante a inicialização.*
+
+Esse comando criará o diretório `.kv/` e o arquivo `.kv/config.yaml`.
+
+### 2. Conectar um Knowledge Vault Externo
+Caso queira conectar um cofre de conhecimento em um diretório externo:
+
+```bash
+kv vault attach ../path-to-your-vault
+```
+*Isso validará o vault (deve conter o marcador `.kv-vault`) e atualizará a chave `vault_path` no seu `.kv/config.yaml`.*
+
+### 3. Criar um Novo Workflow
+Crie um fluxo de trabalho estruturado e versionável para uma feature/bugfix específica:
+
+```bash
+kv workflow new feature-auth
+```
+Esse comando criará a pasta `.kv/workflows/feature-auth/` contendo:
+- `idea.md` (Visão geral da ideia)
+- `prd.md` (Product Requirement Document)
+- `techspec.md` (Especificação técnica e plano de validação)
+- `tasks/` (Diretório para tasks em formato markdown/frontmatter, pré-populada com `001-setup.md`)
+- `context/` (Context packs gerados pelo enricher)
+- `reviews/` (Reviews de código e critérios de aceitação)
+- `memory/` (Registros de aprendizados)
+
+### 4. Definir e Enriquecer Tasks
+As tarefas residem sob `.kv/workflows/<slug>/tasks/<task-id>.md`. Elas utilizam frontmatter YAML para definir dependências e arquivos de código fonte impactados:
+
+```yaml
+---
+id: 002-add-login
+title: "Implement login backend routing"
+status: todo
+type: feature
+complexity: medium
+dependencies:
+  - 001-setup
+agent/runner: opencode
+sources:
+  - src/auth/login.go
+  - src/auth/session.go
+acceptanceCriteria:
+  - "Endpoint POST /api/login resolves successfully"
+  - "Returns valid JWT token on success"
+---
+
+# Descrição da Tarefa
+
+Adicione o roteamento e a validação de credenciais de usuário.
+```
+
+Para enriquecer a task com arquivos do repositório local, conhecimento do Vault e decisões anteriores:
+
+```bash
+kv task enrich feature-auth 002-add-login
+```
+*Isso criará o Context Pack compilado em `.kv/workflows/feature-auth/context/002-add-login.context.md` e alterará o status da task para `in-progress`.*
+
+### 5. Compilar o Contexto para o Runner
+Gere a ponte de contexto que o OpenCode lerá ao iniciar:
+
+```bash
+kv context build feature-auth 002-add-login
+```
+*Esse comando lê o context pack gerado e compila o arquivo `.opencode/context.md` na raiz do projeto.*
+
+### 6. Executar a Task com o Runner
+Para preparar e executar a tarefa utilizando o runner definido:
+
+```bash
+kv task run feature-auth 002-add-login --runner opencode
+```
 
 ---
 
-## Guia de Uso Rápido
+## Outros Comandos Herdados/Utilitários
 
-### 1. Criar um novo Vault
-Inicializa a estrutura recomendada de pastas e arquivos base de um Knowledge Vault em um diretório específico:
-
-```powershell
-kv vault init .\knowledge-vault
+### Busca no Vault
+Para fazer buscas textuais rápidas por arquivos markdown dentro do cofre de conhecimento configurado:
+```bash
+kv find "padrão de autenticação"
 ```
 
-Isso criará uma estrutura contendo o arquivo de identidade `.kv-vault` e pastas organizadas (`00-inbox` a `10-references`), além de notas modelo para agentes, ADRs e especificações globais.
-
-### 2. Conectar um Workspace (Linkar)
-No diretório de trabalho do seu projeto atual, crie um arquivo marcador de ponte `.knowledge-vault` que aponte para o seu cofre recém-criado:
-
-```powershell
-kv workspace init --vault .\knowledge-vault
+### Inicialização e Doctor de Vault
+```bash
+kv vault init ./knowledge-vault   # Cria uma nova estrutura de vault limpa
+kv vault doctor                   # Valida se a estrutura do vault está saudável e completa
+kv vault path                     # Imprime o caminho absoluto do vault ativo
 ```
 
-*Se o marcador `.knowledge-vault` já existir no diretório, a CLI automaticamente criará um backup em `.knowledge-vault.bak` antes de substituí-lo.*
-
-### 3. Verificar o Caminho Ativo
-Para inspecionar qual caminho de Knowledge Vault está ativo e configurado a partir do seu diretório atual:
-
-```powershell
-kv vault path
+### Integração Global OpenCode
+```bash
+kv opencode install               # Instala templates e scripts auxiliares globais em ~/.config/opencode/
+kv opencode doctor                # Valida se os scripts globais estão corretamente instalados
 ```
-
-### 4. Executar Diagnósticos do Vault (Doctor)
-Para validar a integridade estrutural e de arquivos recomendados do seu Knowledge Vault ativo:
-
-```powershell
-kv vault doctor
-```
-
----
-
-## Integração com OpenCode
-
-### Instalação de Scripts e Comandos Globais
-A CLI automatiza a escrita do script auxiliar `kv-find.ps1` e dos comandos customizados markdown em `~/.config/opencode/`:
-
-```powershell
-kv opencode install
-```
-
-Este comando criará:
-* `~/.config/opencode/opencode.json` (caso não exista)
-* `~/.config/opencode/scripts/kv-find.ps1` (finder portátil)
-* 6 Comandos em `~/.config/opencode/commands/` (`knowledge-init.md`, `knowledge-start.md`, `knowledge-plan.md`, `knowledge-migrate.md`, `knowledge-validate.md`, `knowledge-update.md`).
-
-Se os arquivos MD ou PS1 já existirem, serão criados backups com extensão `.bak` antes da atualização.
-
-### Validar Integração OpenCode
-Para conferir se todos os componentes e comandos do OpenCode foram instalados e estão acessíveis:
-
-```powershell
-kv opencode doctor
-```
-
-### Usando no OpenCode
-Após a instalação global, navegue até a pasta de qualquer projeto e inicie o console do OpenCode:
-
-```powershell
-cd .\algum-projeto
-opencode
-```
-
-Dentro do prompt do OpenCode, os seguintes comandos com suporte a descoberta de contexto de conhecimento estarão disponíveis para uso imediato:
-
-* `/knowledge-init` — Inicializa um novo repositório apontando para o vault.
-* `/knowledge-start project=meu-projeto sources=api-principal target=frontend intent="criar app web"` — Inicia um novo módulo consumindo serviços existentes do vault.
-* `/knowledge-plan` — Analisa o repositório atual e planeja o que deve ser migrado para o vault.
-* `/knowledge-migrate` — Executa a migração proposta e atualiza o manifesto.
-* `/knowledge-validate` — Valida consistência de links, manifestos e referências locais ao vault.
-* `/knowledge-update` — Analisa alterações do git diff e recomenda quais decisões/regras de negócio devem ser registradas no vault.

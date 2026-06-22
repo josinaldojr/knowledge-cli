@@ -52,9 +52,23 @@ func FindVault(startDir string) (*FindResult, error) {
 		return nil, fmt.Errorf("failed to resolve starting path: %v", err)
 	}
 
+	// 2. Workspace config check (.kv/config.yaml)
+	if wsDir, err := workspace.FindWorkspaceDir(absStart); err == nil {
+		cfg, err := workspace.LoadConfig(wsDir)
+		if err == nil && cfg.VaultPath != "" {
+			candidate, err := workspace.ResolvePathSafe(wsDir, cfg.VaultPath)
+			if err == nil && IsValidVault(candidate) {
+				return &FindResult{
+					Path:   candidate,
+					Source: "workspace-config",
+				}, nil
+			}
+		}
+	}
+
 	current := absStart
 	for {
-		// 2. Workspace marker: .knowledge-vault
+		// 3. Workspace marker: .knowledge-vault
 		markerFile := filepath.Join(current, workspace.MarkerFilename)
 		if fsutil.IsFile(markerFile) {
 			raw, err := workspace.ReadMarker(current)
