@@ -10,11 +10,41 @@ import (
 
 // VaultMetadata defines the structure of the .kv-vault file.
 type VaultMetadata struct {
-	Type      string `json: "type"`
-	Version   int    `json: "version"`
-	Name      string `json: "name"`
-	CreatedBy string `json: "created_by"`
-	Layout    string `json: "layout"`
+	Type      string `json:"type"`
+	Version   int    `json:"version"`
+	Name      string `json:"name"`
+	CreatedBy string `json:"created_by"`
+	Layout    string `json:"layout"`
+}
+
+// EnsureVaultMarker checks if a path contains .kv-vault. If it is a directory but missing .kv-vault, it creates it.
+func EnsureVaultMarker(vaultPath string) error {
+	absPath, err := fsutil.ResolveAbs(vaultPath)
+	if err != nil {
+		return err
+	}
+	if !fsutil.IsDir(absPath) {
+		return fmt.Errorf("path '%s' is not a directory", absPath)
+	}
+
+	metaPath := filepath.Join(absPath, ".kv-vault")
+	if fsutil.IsFile(metaPath) {
+		return nil
+	}
+
+	metadata := VaultMetadata{
+		Type:      "knowledge-vault",
+		Version:   1,
+		Name:      filepath.Base(absPath),
+		CreatedBy: "kv",
+		Layout:    "default",
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return fsutil.WriteFile(metaPath, data, 0644)
 }
 
 // Init creates a new Knowledge Vault at the specified path.

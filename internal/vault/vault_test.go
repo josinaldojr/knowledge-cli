@@ -102,3 +102,30 @@ func TestFindVaultPrecedence(t *testing.T) {
 		t.Errorf("expected env vault path '%s', got '%s' (source '%s')", envVault, res.Path, res.Source)
 	}
 }
+
+func TestEnsureVaultMarker(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "vault-ensure-marker-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Directory exists but has no marker
+	err = EnsureVaultMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("EnsureVaultMarker failed: %v", err)
+	}
+
+	// Verify .kv-vault exists
+	markerPath := filepath.Join(tmpDir, ".kv-vault")
+	if !fsutil.IsFile(markerPath) {
+		t.Errorf(".kv-vault marker file was not created")
+	}
+
+	// Call again, should skip
+	err = EnsureVaultMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("EnsureVaultMarker on existing marker failed: %v", err)
+	}
+}
+

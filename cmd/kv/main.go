@@ -54,6 +54,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: failed to resolve vault path: %v\n", err)
 				os.Exit(1)
 			}
+			if fsutil.IsDir(absVault) {
+				_ = vault.EnsureVaultMarker(absVault)
+			}
 			if !vault.IsValidVault(absVault) {
 				fmt.Fprintf(os.Stderr, "Error: '%s' is not a valid Knowledge Vault (missing .kv-vault file)\n", absVault)
 				os.Exit(1)
@@ -198,6 +201,9 @@ func main() {
 				os.Exit(1)
 			}
 
+			if fsutil.IsDir(absVault) {
+				_ = vault.EnsureVaultMarker(absVault)
+			}
 			if !vault.IsValidVault(absVault) {
 				fmt.Fprintf(os.Stderr, "Error: '%s' is not a valid Knowledge Vault (missing .kv-vault file)\n", absVault)
 				os.Exit(1)
