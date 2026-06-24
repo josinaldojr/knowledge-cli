@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"kv/internal/context"
 	"kv/internal/fsutil"
 	"kv/internal/opencode"
 	"kv/internal/runner"
+	"kv/internal/session"
 	"kv/internal/task"
 	"kv/internal/vault"
 	"kv/internal/workflow"
@@ -288,20 +290,51 @@ func main() {
 			if err != nil {
 				os.Exit(1)
 			}
-			if *vaultPathPtr == "" {
-				fmt.Fprintln(os.Stderr, "Error: Missing required --vault flag.")
-				printWorkspaceUsage()
-				os.Exit(1)
-			}
-			err = workspace.Init(*vaultPathPtr)
+
+			cwd, err := os.Getwd()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
 				os.Exit(1)
 			}
 
-			// Also create config.yaml for backwards compatibility
-			cwd, err := os.Getwd()
-			if err == nil {
+			// Initialize the new kv-workspace.yaml file
+			wsName := filepath.Base(cwd)
+			if wsName == "." || wsName == "/" {
+				wsName = "workspace"
+			}
+
+			wsYaml := &workspace.WorkspaceYaml{
+				Workspace: workspace.WorkspaceInfo{
+					Name: wsName,
+					Apps: []workspace.App{},
+				},
+			}
+
+			// Check if file already exists
+			if fsutil.IsFile(filepath.Join(cwd, workspace.WorkspaceYamlFileName)) {
+				fmt.Print("File kv-workspace.yaml already exists. Overwrite? (y/N): ")
+				var response string
+				_, err = fmt.Scanln(&response)
+				if err != nil || (strings.ToLower(strings.TrimSpace(response)) != "y" && strings.ToLower(strings.TrimSpace(response)) != "yes") {
+					fmt.Println("Aborted.")
+					os.Exit(0)
+				}
+			}
+
+			err = workspace.SaveWorkspaceYaml(cwd, wsYaml)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to save workspace configuration: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Workspace configuration saved to %s/kv-workspace.yaml\n", cwd)
+
+			// If legacy vault path is provided, also perform legacy workspace init
+			if *vaultPathPtr != "" {
+				err = workspace.Init(*vaultPathPtr)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: legacy vault init failed: %v\n", err)
+					os.Exit(1)
+				}
 				absVault, err := fsutil.ResolveAbs(*vaultPathPtr)
 				if err == nil {
 					relPath, err := filepath.Rel(cwd, absVault)
@@ -315,9 +348,228 @@ func main() {
 				}
 			}
 
+		case "show":
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			ws, err := workspace.LoadWorkspaceYaml(wsDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Workspace Name: %s\n", ws.Workspace.Name)
+			fmt.Printf("Workspace Root: %s\n", wsDir)
+			fmt.Printf("Applications (%d):\n", len(ws.Workspace.Apps))
+			if len(ws.Workspace.Apps) == 0 {
+				fmt.Println("  No applications registered.")
+			} else {
+				for _, app := range ws.Workspace.Apps {
+					fmt.Printf("  - ID:    %s\n", app.ID)
+					fmt.Printf("    Name:  %s\n", app.Name)
+					fmt.Printf("    Path:  %s\n", app.Path)
+					fmt.Printf("    Type:  %s\n", app.Type)
+					fmt.Printf("    Stack: %s\n\n", app.Stack)
+				}
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown workspace subcommand '%s'\n", subCommand)
 			printWorkspaceUsage()
+			os.Exit(1)
+		}
+
+	case "app":
+		if len(os.Args) < 3 {
+			printAppUsage()
+			os.Exit(1)
+		}
+		subCommand := os.Args[2]
+		switch subCommand {
+		case "list":
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			ws, err := workspace.LoadWorkspaceYaml(wsDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			if len(ws.Workspace.Apps) == 0 {
+				fmt.Println("No applications registered in this workspace.")
+				os.Exit(0)
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+			fmt.Fprintln(w, "ID\tNAME\tPATH\tTYPE\tSTACK")
+			for _, app := range ws.Workspace.Apps {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", app.ID, app.Name, app.Path, app.Type, app.Stack)
+			}
+			w.Flush()
+
+		case "add":
+			fs := flag.NewFlagSet("app add", flag.ContinueOnError)
+			idPtr := fs.String("id", "", "Application ID")
+			namePtr := fs.String("name", "", "Application Name")
+			pathPtr := fs.String("path", "", "Application Path")
+			typePtr := fs.String("type", "", "Application Type")
+			stackPtr := fs.String("stack", "", "Application Tech Stack")
+
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			if *idPtr == "" || *namePtr == "" || *pathPtr == "" || *typePtr == "" || *stackPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: All fields (--id, --name, --path, --type, --stack) are required.")
+				printAppUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			ws, err := workspace.LoadWorkspaceYaml(wsDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Validate input path existence relative to current working directory
+			absPath, err := fsutil.ResolveAbs(*pathPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to resolve path '%s': %v\n", *pathPtr, err)
+				os.Exit(1)
+			}
+			if !fsutil.Exists(absPath) {
+				fmt.Fprintf(os.Stderr, "Error: path '%s' does not exist\n", *pathPtr)
+				os.Exit(1)
+			}
+
+			// Convert to relative path from workspace directory for portability
+			relPath := fsutil.ResolveRel(wsDir, absPath)
+
+			newApp := workspace.App{
+				ID:    *idPtr,
+				Name:  *namePtr,
+				Path:  relPath,
+				Type:  *typePtr,
+				Stack: *stackPtr,
+			}
+
+			// Add to apps list
+			ws.Workspace.Apps = append(ws.Workspace.Apps, newApp)
+
+			// Validate overall configuration (checking duplicate IDs, etc.)
+			err = ws.Validate(wsDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid application data: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Save workspace yaml
+			err = workspace.SaveWorkspaceYaml(wsDir, ws)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to save workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Application '%s' successfully added to the workspace.\n", *idPtr)
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown app subcommand '%s'\n", subCommand)
+			printAppUsage()
+			os.Exit(1)
+		}
+
+	case "session":
+		if len(os.Args) < 3 {
+			printSessionUsage()
+			os.Exit(1)
+		}
+		subCommand := os.Args[2]
+		switch subCommand {
+		case "start":
+			fs := flag.NewFlagSet("session start", flag.ContinueOnError)
+			goalPtr := fs.String("goal", "", "Objective of the session")
+			appsPtr := fs.String("apps", "", "Comma-separated list of application IDs")
+
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			if *goalPtr == "" || *appsPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: Both --goal and --apps flags are required.")
+				printSessionUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			ws, err := workspace.LoadWorkspaceYaml(wsDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Parse apps list
+			appIDs := strings.Split(*appsPtr, ",")
+			for i := range appIDs {
+				appIDs[i] = strings.TrimSpace(appIDs[i])
+			}
+
+			sess, err := session.StartSession(wsDir, ws, *goalPtr, appIDs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to start session: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Println("Session started successfully!")
+			fmt.Printf("  ID:            %s\n", sess.ID)
+			fmt.Printf("  Goal:          %s\n", sess.Goal)
+			fmt.Printf("  Selected Apps: %s\n", strings.Join(sess.SelectedApps, ", "))
+			fmt.Println("  Allowed Paths:")
+			for _, p := range sess.Boundary.AllowedPaths {
+				fmt.Printf("    - %s\n", p)
+			}
+			fmt.Printf("  Session File:  .kv/sessions/%s/session.yaml\n", sess.ID)
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown session subcommand '%s'\n", subCommand)
+			printSessionUsage()
 			os.Exit(1)
 		}
 
@@ -461,7 +713,9 @@ func printGeneralUsage() {
 	fmt.Println("  find <query>          Search files inside the active vault")
 	fmt.Println("  context build <workflow> <task-id>  Generate .opencode/context.md from context pack")
 	fmt.Println("  vault                 Manage Knowledge Vault connections and creation")
-	fmt.Println("  workspace             Prepare or link workspace to a vault (legacy)")
+	fmt.Println("  workspace             Manage workspace configuration (kv-workspace.yaml)")
+	fmt.Println("  app                   Manage workspace registered applications")
+	fmt.Println("  session               Manage multi-app development sessions")
 	fmt.Println("  workflow new <slug>   Create a versionable workflow directory")
 	fmt.Println("  task enrich <flow> <id>  Gather context, files, decisions and validation rules")
 	fmt.Println("  task run <flow> <id>    Run task utilizing specified runner adapter")
@@ -483,7 +737,39 @@ func printVaultUsage() {
 
 func printWorkspaceUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  kv workspace init --vault <path>")
+	fmt.Println("  kv workspace <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  init [--vault <path>] Initialize workspace (creates kv-workspace.yaml)")
+	fmt.Println("  show                  Display current workspace details")
+}
+
+func printAppUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv app <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  list                  List registered applications")
+	fmt.Println("  add [flags]           Add a new application to the workspace")
+	fmt.Println()
+	fmt.Println("Flags for 'add':")
+	fmt.Println("  --id <id>             Unique application ID")
+	fmt.Println("  --name <name>         Application name")
+	fmt.Println("  --path <path>         Path to application directory")
+	fmt.Println("  --type <type>         Application type (e.g., backend, frontend)")
+	fmt.Println("  --stack <stack>       Technology stack (e.g., go, typescript)")
+}
+
+func printSessionUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv session <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  start [flags]         Start a new multi-app development session")
+	fmt.Println()
+	fmt.Println("Flags for 'start':")
+	fmt.Println("  --goal <goal>         The main objective/instruction for the session")
+	fmt.Println("  --apps <app1,app2>    Comma-separated list of application IDs to include")
 }
 
 func printWorkflowUsage() {
