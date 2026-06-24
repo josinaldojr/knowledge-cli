@@ -28,6 +28,7 @@ type Session struct {
 // Boundary holds execution boundary constraints.
 type Boundary struct {
 	AllowedPaths []string `yaml:"allowed_paths"`
+	DeniedPaths  []string `yaml:"denied_paths,omitempty"`
 }
 
 // GenerateSessionID generates a unique ID for a session.
