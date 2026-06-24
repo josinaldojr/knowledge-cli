@@ -139,29 +139,67 @@ func main() {
 			os.Exit(1)
 		}
 		if os.Args[2] == "build" {
-			if len(os.Args) < 5 {
-				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
-				fmt.Fprintln(os.Stderr, "Usage: kv context build <workflow-slug> <task-id>")
+			fs := flag.NewFlagSet("context build", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to build context for")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
 				os.Exit(1)
 			}
-			slug := os.Args[3]
-			taskID := os.Args[4]
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			wsDir, err := workspace.FindWorkspaceDir(cwd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+
+			if *sessionPtr != "" {
+				wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+
+				files, processed, warnings, err := context.BuildSessionContext(wsDir, *sessionPtr)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+
+				fmt.Println("Context compilation completed successfully!")
+				fmt.Printf("Processed Applications: %d\n", processed)
+				fmt.Println("Generated Files:")
+				for _, f := range files {
+					fmt.Printf("  - %s\n", f)
+				}
+
+				if len(warnings) > 0 {
+					fmt.Println("\nWarnings:")
+					for _, w := range warnings {
+						fmt.Printf("  - %s\n", w)
+					}
+				}
+			} else {
+				args := fs.Args()
+				if len(args) < 2 {
+					fmt.Fprintln(os.Stderr, "Error: Missing arguments.")
+					printContextUsage()
+					os.Exit(1)
+				}
+				slug := args[0]
+				taskID := args[1]
+
+				wsDir, err := workspace.FindWorkspaceDir(cwd)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				err = context.BuildContext(wsDir, slug, taskID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("Context generated successfully under .opencode/context.md\n")
 			}
-			err = context.BuildContext(wsDir, slug, taskID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Context generated successfully under .opencode/context.md\n")
 		} else {
 			task := os.Args[2]
 			err := vault.GenerateContext(task)
@@ -788,7 +826,8 @@ func printTaskUsage() {
 
 func printContextUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  kv context build <workflow-slug> <task-id>")
+	fmt.Println("  kv context build --session <session-id>    Compile session context")
+	fmt.Println("  kv context build <workflow-slug> <task-id> Compile task context (legacy)")
 	fmt.Println("  kv context <legacy-task-query>")
 }
 

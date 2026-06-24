@@ -9,12 +9,10 @@ Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) comp
 ## Recursos Principais
 
 - **Vault-Native & Local-First**: Toda a configuração do workspace e dos workflows é versionável pelo Git (markdown-first).
-- **Workspace Config (`.kv/config.yaml`)**: Centraliza o apontamento para o Knowledge Vault externo de forma simples e direta.
-- **Workflows Versionáveis**: Organiza os fluxos de trabalho sob `.kv/workflows/<slug>/` gerando automaticamente artefatos base (`idea.md`, `prd.md`, `techspec.md`) e subpastas para `tasks`, `context`, `reviews` e `memory`.
-- **Schema de Tasks YAML**: Permite declarar metadados ricos em markdown/frontmatter para as tarefas (complexidade, dependências, runner, sources, critérios de aceitação).
-- **Enriquecimento de Tasks (`kv task enrich`)**: Gera um *Context Pack* compilando a definição da task, o conteúdo dos arquivos de código referenciados em `sources`, decisões de arquitetura e runbooks do vault e o plano de validação.
-- **Context Builder (`kv context build`)**: Compila o context pack ativamente gerando o arquivo `.opencode/context.md` que o OpenCode consome automaticamente como contexto.
-- **Task Runner (`kv task run`)**: Dispara a execução das tasks utilizando adapters (inicialmente suportando o runner `opencode`).
+- **Workspace Config (`kv-workspace.yaml`)**: Declara e centraliza o mapeamento de múltiplos microsserviços/aplicações no projeto atual de forma declarativa.
+- **Sessões Multi-App**: Permite criar sessões operacionais focadas em objetivos específicos, vinculando apenas as aplicações necessárias e delimitando o espaço físico de leitura/escrita do Agent (`boundary.allowed_paths`).
+- **Context Builder Enriquecido**: Compila o contexto geral da sessão, gerando manifestos JSON, árvores de arquivos recursivas com limites de profundidade e exclusão de pastas pesadas (como `node_modules`, `dist`, `.git`), e sugere arquivos candidatos a alteração por proximidade ao objetivo.
+- **Workflows Versionáveis (Legado)**: Organiza os fluxos de trabalho sob `.kv/workflows/<slug>/` gerando artefatos base (`idea.md`, `prd.md`, `techspec.md`).
 
 ---
 
@@ -34,92 +32,95 @@ go install ./cmd/kv
 
 ---
 
-## Guia de Uso
+## Guia de Uso: Multi-App & Sessões (MVP)
 
-### 1. Inicializar o Workspace
-No diretório raiz do seu repositório/projeto:
+Abaixo, descrevemos o fluxo completo para inicializar um workspace multi-app, registrar aplicações, abrir sessões de desenvolvimento delimitadas e compilar os contextos.
 
-```bash
-kv init
-```
-*Opcional: Você pode passar o parâmetro `--vault <caminho>` para já conectar o vault durante a inicialização.*
-
-Esse comando criará o diretório `.kv/` e o arquivo `.kv/config.yaml`.
-
-### 2. Conectar um Knowledge Vault Externo
-Caso queira conectar um cofre de conhecimento em um diretório externo:
+### 1. Inicializar o Workspace Declarativo
+Cria o arquivo `kv-workspace.yaml` na raiz do seu diretório atual:
 
 ```bash
-kv vault attach ../path-to-your-vault
+kv workspace init
 ```
-*Isso validará o vault (deve conter o marcador `.kv-vault`) e atualizará a chave `vault_path` no seu `.kv/config.yaml`.*
+*Se você deseja linkar também um Knowledge Vault legado de forma simultânea:*
+```bash
+kv workspace init --vault ../path-to-your-vault
+```
+*(Se o arquivo `kv-workspace.yaml` já existir, o CLI solicitará confirmação interativa antes de sobrescrevê-lo).*
 
-### 3. Criar um Novo Workflow
-Crie um fluxo de trabalho estruturado e versionável para uma feature/bugfix específica:
+### 2. Registrar Aplicações
+Adicione os microsserviços ou aplicações que compõem o repositório ao workspace atual. Todas as flags são obrigatórias:
+
+```bash
+kv app add --id api-backend --name "Backend API" --path src/backend --type service --stack go
+kv app add --id web-portal --name "Frontend Portal" --path src/frontend --type frontend --stack nextjs
+```
+*O comando valida duplicidade de IDs e garante que os caminhos (`--path`) realmente existem no disco.*
+
+### 3. Visualizar Configurações do Workspace
+Para ver o workspace declarativo ativo e todas as aplicações listadas:
+
+```bash
+# Ver detalhes estruturados do workspace
+kv workspace show
+
+# Listar aplicações cadastradas em formato de tabela
+kv app list
+```
+
+### 4. Iniciar Sessões Operacionais
+Crie uma sessão focada em um objetivo de desenvolvimento delimitado. Você deve especificar o objetivo (`--goal`) e as aplicações envolvidas (`--apps` separadas por vírgula):
+
+```bash
+kv session start --goal "Refatorar JWT e autenticação" --apps api-backend
+```
+*Isso criará uma pasta `.kv/sessions/<session-id>/session.yaml` contendo a data de criação, o objetivo, o status `active` e os limites de segurança físicos (`boundary.allowed_paths`), rejeitando apps não registrados.*
+
+### 5. Compilar o Contexto da Sessão (Context Builder)
+Gere toda a estrutura de contextos Markdown de que a inteligência artificial precisa para atuar na sessão:
+
+```bash
+kv context build --session <session-id>
+```
+Este comando compilará e salvará os seguintes arquivos na pasta da sessão:
+- `.kv/sessions/<session-id>/context/global.context.md`: Visão geral do objetivo da sessão, lista de apps, boundaries e regras gerais para o Agent.
+- `.kv/sessions/<session-id>/context/apps/<app-id>.context.md`: Detalhes da aplicação, árvore de arquivos filtrada (ignorando pastas gigantes e com limite de profundidade de até 4 níveis), resumo do vault associado (se existir e limitado a 10KB de leitura) e arquivos sugeridos/candidatos para alteração.
+- `.kv/sessions/<session-id>/context/context-manifest.json`: Manifesto de mapeamento estruturado da sessão.
+
+---
+
+## Fluxo de Trabalho por Tasks (Legado)
+
+### 1. Criar um Novo Workflow
+Crie um fluxo de trabalho estruturado para uma feature/bugfix específica:
 
 ```bash
 kv workflow new feature-auth
 ```
-Esse comando criará a pasta `.kv/workflows/feature-auth/` contendo:
-- `idea.md` (Visão geral da ideia)
-- `prd.md` (Product Requirement Document)
-- `techspec.md` (Especificação técnica e plano de validação)
-- `tasks/` (Diretório para tasks em formato markdown/frontmatter, pré-populada com `001-setup.md`)
-- `context/` (Context packs gerados pelo enricher)
-- `reviews/` (Reviews de código e critérios de aceitação)
-- `memory/` (Registros de aprendizados)
 
-### 4. Definir e Enriquecer Tasks
-As tarefas residem sob `.kv/workflows/<slug>/tasks/<task-id>.md`. Elas utilizam frontmatter YAML para definir dependências e arquivos de código fonte impactados:
-
-```yaml
----
-id: 002-add-login
-title: "Implement login backend routing"
-status: todo
-type: feature
-complexity: medium
-dependencies:
-  - 001-setup
-agent/runner: opencode
-sources:
-  - src/auth/login.go
-  - src/auth/session.go
-acceptanceCriteria:
-  - "Endpoint POST /api/login resolves successfully"
-  - "Returns valid JWT token on success"
----
-
-# Descrição da Tarefa
-
-Adicione o roteamento e a validação de credenciais de usuário.
-```
-
-Para enriquecer a task com arquivos do repositório local, conhecimento do Vault e decisões anteriores:
+### 2. Definir e Enriquecer Tasks
+As tarefas residem sob `.kv/workflows/<slug>/tasks/<task-id>.md`. Para enriquecer a task com arquivos locais e runbooks do Vault:
 
 ```bash
 kv task enrich feature-auth 002-add-login
 ```
-*Isso criará o Context Pack compilado em `.kv/workflows/feature-auth/context/002-add-login.context.md` e alterará o status da task para `in-progress`.*
 
-### 5. Compilar o Contexto para o Runner
-Gere a ponte de contexto que o OpenCode lerá ao iniciar:
+### 3. Compilar Contexto de Task
+Gere a ponte de contexto legada para o runner:
 
 ```bash
 kv context build feature-auth 002-add-login
 ```
-*Esse comando lê o context pack gerado e compila o arquivo `.opencode/context.md` na raiz do projeto.*
+*Gera `.opencode/context.md` na raiz do projeto.*
 
-### 6. Executar a Task com o Runner
-Para preparar e executar a tarefa utilizando o runner definido:
-
+### 4. Executar a Task
 ```bash
 kv task run feature-auth 002-add-login --runner opencode
 ```
 
 ---
 
-## Outros Comandos Herdados/Utilitários
+## Outros Comandos Utilitários
 
 ### Busca no Vault
 Para fazer buscas textuais rápidas por arquivos markdown dentro do cofre de conhecimento configurado:
