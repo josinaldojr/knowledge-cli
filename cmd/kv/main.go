@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
+	"kv/internal/boundary"
 	"kv/internal/context"
 	"kv/internal/fsutil"
 	"kv/internal/opencode"
@@ -543,6 +545,63 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "boundary":
+		if len(os.Args) < 3 {
+			printBoundaryUsage()
+			os.Exit(1)
+		}
+		subCommand := os.Args[2]
+		switch subCommand {
+		case "validate":
+			fs := flag.NewFlagSet("boundary validate", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to validate")
+			untrackedPtr := fs.Bool("include-untracked", false, "Include untracked files in validation")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+			if *sessionPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+				printBoundaryUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(2)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(2)
+			}
+
+			sess, err := session.LoadSession(wsDir, *sessionPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load session: %v\n", err)
+				os.Exit(2)
+			}
+
+			report, err := boundary.ValidateSession(wsDir, sess, *untrackedPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: validation failed: %v\n", err)
+				os.Exit(2)
+			}
+
+			boundary.PrintReport(report, wsDir)
+			if report.IsValid() {
+				os.Exit(0)
+			} else {
+				os.Exit(1)
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown boundary subcommand '%s'\n", subCommand)
+			printBoundaryUsage()
+			os.Exit(1)
+		}
+
 	case "session":
 		if len(os.Args) < 3 {
 			printSessionUsage()
@@ -604,6 +663,91 @@ func main() {
 				fmt.Printf("    - %s\n", p)
 			}
 			fmt.Printf("  Session File:  .kv/sessions/%s/session.yaml\n", sess.ID)
+
+		case "diff":
+			fs := flag.NewFlagSet("session diff", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to diff")
+			untrackedPtr := fs.Bool("include-untracked", false, "Include untracked files in diff")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+			if *sessionPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+				printSessionUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(2)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(2)
+			}
+
+			sess, err := session.LoadSession(wsDir, *sessionPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load session: %v\n", err)
+				os.Exit(2)
+			}
+
+			report, err := boundary.ValidateSession(wsDir, sess, *untrackedPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: validation failed: %v\n", err)
+				os.Exit(2)
+			}
+
+			if len(report.Allowed) == 0 {
+				fmt.Println("No changes within session boundaries.")
+			} else {
+				var allowedPaths []string
+				var untrackedPaths []string
+				for _, val := range report.Allowed {
+					rel, err := filepath.Rel(wsDir, val.Path)
+					if err != nil {
+						rel = val.Path
+					}
+
+					cmdCheck := exec.Command("git", "ls-files", "--error-unmatch", rel)
+					cmdCheck.Dir = wsDir
+					if err := cmdCheck.Run(); err != nil {
+						untrackedPaths = append(untrackedPaths, rel)
+					} else {
+						allowedPaths = append(allowedPaths, rel)
+					}
+				}
+
+				if len(allowedPaths) > 0 {
+					cmdUnstaged := exec.Command("git", append([]string{"diff", "--"}, allowedPaths...)...)
+					cmdUnstaged.Dir = wsDir
+					cmdUnstaged.Stdout = os.Stdout
+					cmdUnstaged.Stderr = os.Stderr
+					_ = cmdUnstaged.Run()
+
+					cmdStaged := exec.Command("git", append([]string{"diff", "--cached", "--"}, allowedPaths...)...)
+					cmdStaged.Dir = wsDir
+					cmdStaged.Stdout = os.Stdout
+					cmdStaged.Stderr = os.Stderr
+					_ = cmdStaged.Run()
+				}
+
+				for _, f := range untrackedPaths {
+					fmt.Printf("\n--- /dev/null\n+++ b/%s\n", f)
+					cmdUntracked := exec.Command("git", "diff", "--no-index", "--", "/dev/null", f)
+					cmdUntracked.Dir = wsDir
+					cmdUntracked.Stdout = os.Stdout
+					cmdUntracked.Stderr = os.Stderr
+					_ = cmdUntracked.Run()
+				}
+			}
+
+			if len(report.Denied) > 0 || len(report.OutOfScope) > 0 {
+				fmt.Fprintln(os.Stderr, "\nWARNING: There are changes violating session boundaries. Run 'kv boundary validate' for details.")
+			}
 
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown session subcommand '%s'\n", subCommand)
@@ -754,6 +898,7 @@ func printGeneralUsage() {
 	fmt.Println("  workspace             Manage workspace configuration (kv-workspace.yaml)")
 	fmt.Println("  app                   Manage workspace registered applications")
 	fmt.Println("  session               Manage multi-app development sessions")
+	fmt.Println("  boundary              Validate session boundaries")
 	fmt.Println("  workflow new <slug>   Create a versionable workflow directory")
 	fmt.Println("  task enrich <flow> <id>  Gather context, files, decisions and validation rules")
 	fmt.Println("  task run <flow> <id>    Run task utilizing specified runner adapter")
@@ -804,10 +949,27 @@ func printSessionUsage() {
 	fmt.Println()
 	fmt.Println("Subcommands:")
 	fmt.Println("  start [flags]         Start a new multi-app development session")
+	fmt.Println("  diff [flags]          Show git diff of session allowed paths")
 	fmt.Println()
 	fmt.Println("Flags for 'start':")
 	fmt.Println("  --goal <goal>         The main objective/instruction for the session")
 	fmt.Println("  --apps <app1,app2>    Comma-separated list of application IDs to include")
+	fmt.Println()
+	fmt.Println("Flags for 'diff':")
+	fmt.Println("  --session <id>        Session ID to compare")
+	fmt.Println("  --include-untracked   Include untracked files in diff")
+}
+
+func printBoundaryUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv boundary <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  validate [flags]      Validate changed files against session boundaries")
+	fmt.Println()
+	fmt.Println("Flags for 'validate':")
+	fmt.Println("  --session <id>        Session ID to validate")
+	fmt.Println("  --include-untracked   Include untracked files in validation")
 }
 
 func printWorkflowUsage() {
