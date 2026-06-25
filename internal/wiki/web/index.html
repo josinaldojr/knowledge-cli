@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>kv - LLM Wiki</title>
+    <!-- Google Fonts: Inter & JetBrains Mono for Code -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Marked JS for Client-Side Markdown Rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- TOP NAVIGATION BAR -->
+        <header class="app-header">
+            <div class="header-logo">
+                <span class="logo-kv">kv</span>
+                <span class="logo-sub">LLM Wiki</span>
+            </div>
+            <div class="search-trigger" id="search-trigger-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span>Buscar documentos...</span>
+                <kbd class="shortcut">⌘K</kbd>
+            </div>
+            <div class="header-status">
+                <span class="status-indicator online"></span>
+                <span class="status-text">Cofre Ativo</span>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <div class="app-container">
+            <!-- LEFT PANEL: VAULT DIRECTORY TREE -->
+            <aside class="sidebar font-tree">
+                <div class="sidebar-title">
+                    <h3>Vault Explorer</h3>
+                    <button class="btn-icon" id="btn-refresh-tree" title="Atualizar">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                    </button>
+                </div>
+                <nav class="tree-container" id="vault-tree">
+                    <!-- Tree items injected by JavaScript -->
+                    <div class="loading-state">Carregando cofre...</div>
+                </nav>
+            </aside>
+
+            <!-- CENTER PANEL: MARKDOWN DOCUMENT READER -->
+            <main class="content-area">
+                <article class="doc-viewer" id="doc-viewer">
+                    <div class="welcome-screen">
+                        <div class="welcome-icon">📖</div>
+                        <h1>Bem-vindo à LLM Wiki do kv</h1>
+                        <p>Selecione um documento no painel esquerdo ou utilize a pesquisa rápida para começar.</p>
+                        <div class="welcome-features">
+                            <div class="feature-card">
+                                <h4>Compilação Automática</h4>
+                                <p>Notas cruas da inbox são compiladas e organizadas por IA no cofre.</p>
+                            </div>
+                            <div class="feature-card">
+                                <h4>Links Cruzados</h4>
+                                <p>Menções a termos de arquitetura e ADRs são vinculadas automaticamente.</p>
+                            </div>
+                            <div class="feature-card">
+                                <h4>Assistente RAG</h4>
+                                <p>Tire dúvidas técnicas diretamente com a IA no chat lateral.</p>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+            </main>
+
+            <!-- RIGHT PANEL: AI WIKI ASSISTANT (CHAT) -->
+            <aside class="chat-panel">
+                <div class="chat-header">
+                    <div class="chat-agent-info">
+                        <span class="chat-agent-icon">🤖</span>
+                        <div>
+                            <h4>Wiki Copilot</h4>
+                            <p>Gemini QA Assistant</p>
+                        </div>
+                    </div>
+                    <button class="btn-clear-chat" id="btn-clear-chat" title="Limpar conversa">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </button>
+                </div>
+                
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-message model-msg">
+                        Olá! Sou o assistente da Wiki. Como posso ajudar com a documentação do projeto hoje?
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <form id="chat-form">
+                        <textarea class="chat-input" id="chat-input" placeholder="Pergunte à wiki (ex: Padrões de auth...)" rows="1"></textarea>
+                        <button type="submit" class="btn-send" id="btn-send" title="Enviar pergunta">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        </button>
+                    </form>
+                </div>
+            </aside>
+        </div>
+
+        <!-- QUICK SEARCH MODAL (CMD + K) -->
+        <div class="modal-overlay" id="search-modal">
+            <div class="modal-container">
+                <div class="modal-search-header">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" class="modal-search-input" id="search-input" placeholder="O que você está procurando?" autocomplete="off">
+                    <button class="modal-close" id="btn-close-search">ESC</button>
+                </div>
+                <div class="modal-search-results" id="search-results">
+                    <div class="search-helper-text">Comece a digitar para pesquisar documentos...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

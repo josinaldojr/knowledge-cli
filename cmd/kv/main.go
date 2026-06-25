@@ -20,6 +20,7 @@ import (
 	"kv/internal/session"
 	"kv/internal/task"
 	"kv/internal/vault"
+	"kv/internal/wiki"
 	"kv/internal/workflow"
 	"kv/internal/workspace"
 )
@@ -1268,6 +1269,112 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "wiki":
+		if len(os.Args) < 3 {
+			printWikiUsage()
+			os.Exit(1)
+		}
+		sub := os.Args[2]
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+			os.Exit(1)
+		}
+		res, err := vault.FindVault(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: active Knowledge Vault not found. Run 'kv vault init' or check your config.\n")
+			os.Exit(1)
+		}
+		vaultPath := res.Path
+
+		switch sub {
+		case "help", "-h", "--help":
+			printWikiUsage()
+			os.Exit(0)
+
+		case "compile":
+			client, err := wiki.NewClient()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting up LLM Client: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Please ensure GEMINI_API_KEY environment variable is set.")
+				os.Exit(1)
+			}
+			fmt.Println("Iniciando compilação de notas brutas...")
+			count, err := wiki.CompileInbox(vaultPath, client)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Erro na compilação: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Compilação concluída. %d arquivo(s) processado(s).\n", count)
+
+		case "link":
+			client, err := wiki.NewClient()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting up LLM Client: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Please ensure GEMINI_API_KEY environment variable is set.")
+				os.Exit(1)
+			}
+			err = wiki.AutoLinkAll(vaultPath, client)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Erro ao gerar links: %v\n", err)
+				os.Exit(1)
+			}
+
+		case "ask":
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "Error: Missing query.")
+				fmt.Fprintln(os.Stderr, "Usage: kv wiki ask \"<pergunta>\"")
+				os.Exit(1)
+			}
+			query := os.Args[3]
+
+			client, err := wiki.NewClient()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting up LLM Client: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Please ensure GEMINI_API_KEY environment variable is set.")
+				os.Exit(1)
+			}
+
+			fmt.Println("Consultando a LLM Wiki...")
+			answer, err := wiki.AskWiki(vaultPath, client, query)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Erro ao consultar a wiki: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("\nResposta da Wiki:")
+			fmt.Println("--------------------")
+			fmt.Println(answer)
+			fmt.Println("--------------------")
+
+		case "serve":
+			fs := flag.NewFlagSet("wiki serve", flag.ContinueOnError)
+			portPtr := fs.Int("port", 8080, "Port to run the local web server on")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			client, err := wiki.NewClient()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting up LLM Client: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Please ensure GEMINI_API_KEY environment variable is set.")
+				os.Exit(1)
+			}
+
+			srv := wiki.NewServer(vaultPath, client, *portPtr)
+			err = srv.Start()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Erro ao iniciar o servidor: %v\n", err)
+				os.Exit(1)
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown wiki subcommand '%s'\n", sub)
+			printWikiUsage()
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'\n", command)
 		printGeneralUsage()
@@ -1294,8 +1401,20 @@ func printGeneralUsage() {
 	fmt.Println("  task enrich <flow> <id>  Gather context, files, decisions and validation rules")
 	fmt.Println("  task run <flow> <id>    Run task utilizing specified runner adapter")
 	fmt.Println("  opencode              Install or inspect OpenCode agent commands integration")
+	fmt.Println("  wiki                  Manage the LLM Wiki (compile notes, link pages, ask questions)")
 	fmt.Println()
 	fmt.Println("Use 'kv <command> --help' or 'kv <command> <subcommand>' for details.")
+}
+
+func printWikiUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  kv wiki <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  compile     Scan 00-inbox/ and compile notes using LLM into canonical directories")
+	fmt.Println("  link        Run a pass over all canonical wiki files to generate relative cross-links")
+	fmt.Println("  ask <query> Ask a natural language question to the compiled wiki")
+	fmt.Println("  serve       Launch the local premium web interface on a specified port")
 }
 
 func printVaultUsage() {
