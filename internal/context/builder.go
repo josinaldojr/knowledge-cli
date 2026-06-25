@@ -77,6 +77,7 @@ func BuildSessionContext(workspaceDir, sessionID string) ([]string, int, []strin
 	var warnings []string
 	warnings = append(warnings, vaultWarnings...)
 	var manifestApps []AppContext
+	var appDataList []*AppContextData
 
 	// 3. Process each app selected in session
 	for _, appID := range sess.SelectedApps {
@@ -140,6 +141,8 @@ func BuildSessionContext(workspaceDir, sessionID string) ([]string, int, []strin
 			CandidateFiles: candidates,
 		}
 
+		appDataList = append(appDataList, appData)
+
 		appMDContent := RenderAppContext(appData)
 		if err := SaveAppContext(workspaceDir, sessionID, appID, appMDContent); err != nil {
 			return nil, 0, nil, fmt.Errorf("failed to save context for app '%s': %v", appID, err)
@@ -198,6 +201,118 @@ func BuildSessionContext(workspaceDir, sessionID string) ([]string, int, []strin
 
 	manifestRel := filepath.Join(".kv", "sessions", sessionID, "context", "context-manifest.json")
 	generatedFiles = append(generatedFiles, filepath.Join(workspaceDir, manifestRel))
+
+	// 7. Compile unified context.md
+	var cb strings.Builder
+	cb.WriteString("# Session Context\n\n")
+	cb.WriteString(fmt.Sprintf("## Goal\n\n%s\n\n", sess.Goal))
+
+	cb.WriteString("## Applications\n\n")
+	filesCount := 0
+	for _, appData := range appDataList {
+		cb.WriteString(fmt.Sprintf("### Application: %s\n", appData.Name))
+		cb.WriteString(fmt.Sprintf("- **ID**: `%s`\n", appData.ID))
+		cb.WriteString(fmt.Sprintf("- **Type**: `%s`\n", appData.Type))
+		cb.WriteString(fmt.Sprintf("- **Stack**: `%s`\n", appData.Stack))
+		cb.WriteString(fmt.Sprintf("- **Path**: `%s`\n\n", appData.Path))
+
+		cb.WriteString("#### Relevant File Tree\n```\n")
+		cb.WriteString(appData.FileTree)
+		cb.WriteString("```\n\n")
+
+		cb.WriteString("#### Candidate Files for Modification\n")
+		if len(appData.CandidateFiles) == 0 {
+			cb.WriteString("*(No specific files identified as candidates.)*\n\n")
+		} else {
+			for _, f := range appData.CandidateFiles {
+				cb.WriteString(fmt.Sprintf("- `%s`\n", f))
+				filesCount++
+			}
+			cb.WriteString("\n")
+		}
+
+		if appData.VaultFile != "" {
+			cb.WriteString("#### Associated Vault Document\n")
+			cb.WriteString(fmt.Sprintf("- **Document**: `%s`\n\n", filepath.Base(appData.VaultFile)))
+			cb.WriteString("##### Document Summary:\n")
+			cb.WriteString(appData.VaultSummary + "\n\n")
+		}
+	}
+
+	cb.WriteString("## Boundaries\n\n")
+	cb.WriteString("### Allowed read/write paths:\n")
+	for _, p := range sess.Boundary.AllowedPaths {
+		cb.WriteString(fmt.Sprintf("- `%s`\n", p))
+	}
+	cb.WriteString("\n")
+	cb.WriteString("### Writable paths:\n")
+	for _, p := range sess.Boundary.WritablePaths {
+		cb.WriteString(fmt.Sprintf("- `%s`\n", p))
+	}
+	cb.WriteString("\n")
+	cb.WriteString("### Readonly paths:\n")
+	for _, p := range sess.Boundary.ReadonlyPaths {
+		cb.WriteString(fmt.Sprintf("- `%s`\n", p))
+	}
+	cb.WriteString("\n")
+
+	cb.WriteString("## Policies\n\n")
+	cb.WriteString(fmt.Sprintf("- **Network**: `%v`\n", sess.Policy.Network))
+	cb.WriteString(fmt.Sprintf("- **Env read**: `%v`\n", sess.Policy.AllowEnvRead))
+	cb.WriteString(fmt.Sprintf("- **Delete files**: `%v`\n", sess.Policy.AllowDeleteFiles))
+	cb.WriteString(fmt.Sprintf("- **Dependency install**: `%s`\n", sess.Policy.AllowDependencyInstall))
+	cb.WriteString(fmt.Sprintf("- **Migrations**: `%s`\n", sess.Policy.AllowMigrations))
+	cb.WriteString(fmt.Sprintf("- **Docker**: `%v`\n\n", sess.Policy.AllowDocker))
+
+	cb.WriteString("## Quality Commands\n\n")
+	if len(sess.Quality.Commands) == 0 {
+		cb.WriteString("*(No quality commands configured)*\n\n")
+	} else {
+		for _, qc := range sess.Quality.Commands {
+			cb.WriteString(fmt.Sprintf("- `%s`\n", qc))
+		}
+		cb.WriteString("\n")
+	}
+
+	cb.WriteString("## Execution Instructions\n\n")
+	cb.WriteString("1. Implement changes targeting the Goal.\n")
+	cb.WriteString("2. Only write to Writable paths.\n")
+	cb.WriteString("3. Run quality gates to verify changes.\n")
+
+	contextText := cb.String()
+	contextPath := filepath.Join(workspaceDir, ".kv", "sessions", sessionID, "context.md")
+	_ = ioutil.WriteFile(contextPath, []byte(contextText), 0644)
+	generatedFiles = append(generatedFiles, contextPath)
+
+	// 8. Compile unified opencode.md
+	var ob strings.Builder
+	ob.WriteString("# OpenCode Instruction Prompt\n\n")
+	ob.WriteString("You are executing an automated AI coding session. Please read the detailed context:\n")
+	ob.WriteString(fmt.Sprintf("- **Context File**: `.kv/sessions/%s/context.md`\n", sessionID))
+	ob.WriteString(fmt.Sprintf("- **Goal**: %s\n\n", sess.Goal))
+	ob.WriteString("Constraints:\n")
+	ob.WriteString("- You MUST NOT read or write files outside Allowed zones.\n")
+	ob.WriteString("- You MUST NOT read `.env` files.\n")
+	ob.WriteString("- Ensure quality commands pass before finishing.\n")
+
+	opencodeText := ob.String()
+	opencodePath := filepath.Join(workspaceDir, ".kv", "sessions", sessionID, "opencode.md")
+	_ = ioutil.WriteFile(opencodePath, []byte(opencodeText), 0644)
+	generatedFiles = append(generatedFiles, opencodePath)
+
+	// Log audit event
+	tokensEst := len(contextText) / 4
+	vaultDocsCount := 0
+	for _, appData := range appDataList {
+		if appData.VaultFile != "" {
+			vaultDocsCount++
+		}
+	}
+	_ = session.LogEvent(workspaceDir, sessionID, "context_built", map[string]interface{}{
+		"files":            filesCount,
+		"vault_docs":       vaultDocsCount,
+		"estimated_tokens": tokensEst,
+	})
 
 	return generatedFiles, len(sess.SelectedApps), warnings, nil
 }

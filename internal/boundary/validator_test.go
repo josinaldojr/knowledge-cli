@@ -228,3 +228,86 @@ func TestValidateSession(t *testing.T) {
 		t.Errorf("expected report without untracked files to NOT contain %s", untrackedFile)
 	}
 }
+
+func TestValidateSessionContract(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "contract-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	appDir := filepath.Join(tmpDir, "app1")
+	_ = os.MkdirAll(appDir, 0755)
+
+	vaultDir := filepath.Join(tmpDir, "vault")
+	_ = os.MkdirAll(vaultDir, 0755)
+
+	sess := &session.Session{
+		ID:   "test-sess",
+		Goal: "test contract validation",
+		Apps: []session.AppContract{
+			{
+				Name: "app1",
+				Path: appDir,
+			},
+		},
+		Vault: session.VaultContract{
+			Enabled: true,
+			Sources: []string{vaultDir},
+		},
+		Boundary: session.Boundary{
+			AllowedPaths:  []string{appDir, vaultDir},
+			WritablePaths: []string{appDir},
+			ReadonlyPaths: []string{vaultDir},
+		},
+	}
+
+	err = ValidateSessionContract(tmpDir, sess)
+	if err != nil {
+		t.Errorf("expected contract to be valid, got error: %v", err)
+	}
+
+	sessInvalidWritable := &session.Session{
+		ID:   "test-sess",
+		Goal: "test contract validation",
+		Apps: []session.AppContract{
+			{
+				Name: "app1",
+				Path: appDir,
+			},
+		},
+		Boundary: session.Boundary{
+			AllowedPaths:  []string{appDir},
+			WritablePaths: []string{filepath.Join(tmpDir, "other-unallowed-dir")},
+		},
+	}
+	_ = os.MkdirAll(filepath.Join(tmpDir, "other-unallowed-dir"), 0755)
+
+	err = ValidateSessionContract(tmpDir, sessInvalidWritable)
+	if err == nil {
+		t.Error("expected error for writable path outside allowed, got nil")
+	}
+
+	sessInvalidVault := &session.Session{
+		ID:   "test-sess",
+		Goal: "test contract validation",
+		Apps: []session.AppContract{
+			{
+				Name: "app1",
+				Path: appDir,
+			},
+		},
+		Vault: session.VaultContract{
+			Enabled: true,
+			Sources: []string{filepath.Join(tmpDir, "nonexistent-vault-source")},
+		},
+		Boundary: session.Boundary{
+			AllowedPaths:  []string{appDir},
+			WritablePaths: []string{appDir},
+		},
+	}
+	err = ValidateSessionContract(tmpDir, sessInvalidVault)
+	if err == nil {
+		t.Error("expected error for nonexistent vault source path, got nil")
+	}
+}

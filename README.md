@@ -32,62 +32,88 @@ go install ./cmd/kv
 
 ---
 
-## Guia de Uso: Multi-App & Sessões (MVP)
+## Guia de Uso: Multi-App & Sessões (MVP Completo)
 
-Abaixo, descrevemos o fluxo completo para inicializar um workspace multi-app, registrar aplicações, abrir sessões de desenvolvimento delimitadas e compilar os contextos.
+Abaixo, descrevemos o fluxo completo de ponta a ponta para inicializar um workspace, abrir sessões de desenvolvimento delimitadas por boundaries físicas e políticas de segurança, compilar o contexto, validar a execução automatizada com testes (quality gates) e gerar relatórios de progresso auditados.
 
-### 1. Inicializar o Workspace Declarativo
-Cria o arquivo `kv-workspace.yaml` na raiz do seu diretório atual:
-
-```bash
-kv workspace init
-```
-*Se você deseja linkar também um Knowledge Vault legado de forma simultânea:*
-```bash
-kv workspace init --vault ../path-to-your-vault
-```
-*(Se o arquivo `kv-workspace.yaml` já existir, o CLI solicitará confirmação interativa antes de sobrescrevê-lo).*
-
-### 2. Registrar Aplicações
-Adicione os microsserviços ou aplicações que compõem o repositório ao workspace atual. Todas as flags são obrigatórias:
+### Fluxo Básico de Execução (Ponta a Ponta)
 
 ```bash
-kv app add --id api-backend --name "Backend API" --path src/backend --type service --stack go
-kv app add --id web-portal --name "Frontend Portal" --path src/frontend --type frontend --stack nextjs
+# 1. Escanear o workspace para detectar aplicações e stacks
+kv workspace scan
+
+# 2. Inicializar o contrato de uma nova sessão
+kv session init --id session-auth-refactor --goal "Refatorar autenticação do serviço" --apps api-payments=./apps/api-payments --vault ./vault/auth --writable ./apps/api-payments
+
+# 3. Validar se as regras da sessão estão corretas (existência de caminhos, permissões, etc.)
+kv session validate --session session-auth-refactor
+
+# 4. Compilar o contexto da sessão (context.md, opencode.md)
+kv context build --session session-auth-refactor
+
+# 5. Executar dry run para simulação do contexto
+kv run --session session-auth-refactor --dry-run
+
+# 6. Executar o fluxo da sessão (limites físicos, logs de auditoria)
+kv run --session session-auth-refactor
+
+# 7. Rodar testes e verificações de qualidade
+kv quality run --session session-auth-refactor
+
+# 8. Gerar resumo do diff de alterações
+kv diff summarize --session session-auth-refactor
+
+# 9. Gerar o relatório final consolidado da sessão
+kv session report --session session-auth-refactor
 ```
-*O comando valida duplicidade de IDs e garante que os caminhos (`--path`) realmente existem no disco.*
 
-### 3. Visualizar Configurações do Workspace
-Para ver o workspace declarativo ativo e todas as aplicações listadas:
+### Detalhamento dos Recursos
 
-```bash
-# Ver detalhes estruturados do workspace
-kv workspace show
+#### 1. Mapeamento Automático (`kv workspace scan`)
+Varre o repositório em busca de arquivos de assinatura de stacks (`go.mod`, `package.json`, `pom.xml`, `requirements.txt`, `Dockerfile`) e registra de forma automatizada as aplicações e suas stacks em `kv-workspace.yaml`.
 
-# Listar aplicações cadastradas em formato de tabela
-kv app list
+#### 2. Contratos de Sessão (`kv session init` / `kv session start`)
+Cria o arquivo `.kv/sessions/<session-id>/session.yaml` contendo:
+- **`apps`**: Mapeamento das aplicações envolvidas.
+- **`vault`**: Fontes de documentação/conhecimento associadas.
+- **`boundary`**: Caminhos permitidos (`allowed_paths`), caminhos de escrita (`writable_paths`) e caminhos readonly (`readonly_paths`).
+- **`quality`**: Comandos de testes automatizados inferidos a partir da stack (ex: `go test ./...` ou `npm test`).
+- **`policy`**: Restrições do Policy Engine (redes, leitura de envs, permissão de exclusão, docker, etc.).
+
+Também cria a estrutura inicial de diretórios e arquivos de sessão:
+```txt
+.kv/
+  sessions/
+    session-auth-refactor/
+      session.yaml
+      context.md
+      opencode.md
+      audit.jsonl
+      report.md
 ```
 
-### 4. Iniciar Sessões Operacionais
-Crie uma sessão focada em um objetivo de desenvolvimento delimitado. Você deve especificar o objetivo (`--goal`) e as aplicações envolvidas (`--apps` separadas por vírgula):
+#### 3. Validação do Contrato (`kv session validate`)
+Analisa a integridade da configuração da sessão e garante que:
+- Todos os caminhos (apps, vault, boundary) existem fisicamente no disco.
+- Os caminhos de escrita (`writable_paths`) estão contidos nos caminhos permitidos (`allowed_paths`).
+- Não há sobreposição conflituosa entre caminhos de leitura e escrita.
 
-```bash
-kv session start --goal "Refatorar JWT e autenticação" --apps api-backend
-```
-*Isso criará uma pasta `.kv/sessions/<session-id>/session.yaml` contendo a data de criação, o objetivo, o status `active` e os limites de segurança físicos (`boundary.allowed_paths`), rejeitando apps não registrados.*
+#### 4. Execução Controlada (`kv run`)
+Executa o fluxo da sessão utilizando o runner selecionado.
+- Com a flag `--dry-run`, exibe um resumo detalhado contendo tamanho estimado do contexto, boundaries de leitura/escrita configuradas, comandos de qualidade e status geral de validação sem executar o agente.
+- Em execução normal, valida as boundaries, escreve eventos no log de auditoria append-only (`audit.jsonl`), executa os Quality Gates, o Diff Summarizer e gera o relatório final.
 
-### 5. Compilar o Contexto da Sessão (Context Builder)
-Gere toda a estrutura de contextos Markdown de que a inteligência artificial precisa para atuar na sessão:
+#### 5. Quality Gates (`kv quality run`)
+Executa os comandos de qualidade (testes unitários, linters) do contrato da sessão a partir dos diretórios de suas respectivas aplicações, validando a segurança com o Policy Engine antes da execução e registrando o resultado no log de auditoria.
 
-```bash
-kv context build --session <session-id>
-```
-Este comando compilará e salvará os seguintes arquivos na pasta da sessão:
-- `.kv/sessions/<session-id>/context/global.context.md`: Visão geral do objetivo da sessão, lista de apps, boundaries e regras gerais para o Agent.
-- `.kv/sessions/<session-id>/context/apps/<app-id>.context.md`: Detalhes da aplicação, árvore de arquivos filtrada (ignorando pastas gigantes e com limite de profundidade de até 4 níveis), resumo do vault associado (se existir e limitado a 10KB de leitura) e arquivos sugeridos/candidatos para alteração.
-- `.kv/sessions/<session-id>/context/context-manifest.json`: Manifesto de mapeamento estruturado da sessão.
+#### 6. Diff Summarizer (`kv diff summarize`)
+Analisa o `git diff` associado aos caminhos permitidos da sessão e compila um resumo estruturado com arquivos modificados, novas funções/estruturas, alterações nos testes e análise de riscos de regressão em `.kv/sessions/<session-id>/diff-summary.md`.
+
+#### 7. Relatório de Progresso (`kv session report`)
+Consolida o progresso geral da sessão (objetivo, status de validação física das boundaries, comandos de qualidade executados, riscos detectados, diff summary e próximos passos recomendados) em `.kv/sessions/<session-id>/report.md`.
 
 ---
+
 
 ## Fluxo de Trabalho por Tasks (Legado)
 
@@ -128,9 +154,10 @@ Para fazer buscas textuais rápidas por arquivos markdown dentro do cofre de con
 kv find "padrão de autenticação"
 ```
 
-### Inicialização e Doctor de Vault
+### Inicialização, Associação e Doctor de Vault
 ```bash
 kv vault init ./knowledge-vault   # Cria uma nova estrutura de vault limpa
+kv vault attach ./knowledge-vault # Associa um cofre de conhecimento externo ao workspace atual (configurando caminhos relativos)
 kv vault doctor                   # Valida se a estrutura do vault está saudável e completa
 kv vault path                     # Imprime o caminho absoluto do vault ativo
 ```

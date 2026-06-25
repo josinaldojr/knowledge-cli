@@ -22,13 +22,13 @@ func GetGitChanges(dir string, includeUntracked bool) (string, []string, error) 
 	}
 
 	// 1. Get unstaged changes
-	unstagedStr, err := runGitCommand(dir, "diff", "--name-only")
+	unstagedStr, err := runGitCommand(gitRoot, "diff", "--name-only")
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get unstaged changes: %w", err)
 	}
 
 	// 2. Get staged changes
-	stagedStr, err := runGitCommand(dir, "diff", "--cached", "--name-only")
+	stagedStr, err := runGitCommand(gitRoot, "diff", "--cached", "--name-only")
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get staged changes: %w", err)
 	}
@@ -61,7 +61,7 @@ func GetGitChanges(dir string, includeUntracked bool) (string, []string, error) 
 
 	// 3. Get untracked changes if requested
 	if includeUntracked {
-		untrackedStr, err := runGitCommand(dir, "ls-files", "--others", "--exclude-standard")
+		untrackedStr, err := runGitCommand(gitRoot, "ls-files", "--others", "--exclude-standard")
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to get untracked files: %w", err)
 		}

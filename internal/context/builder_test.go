@@ -149,8 +149,8 @@ func TestBuildSessionContext(t *testing.T) {
 	if processed != 1 {
 		t.Errorf("expected 1 processed app, got %d", processed)
 	}
-	if len(files) != 3 {
-		t.Errorf("expected 3 generated files, got %d", len(files))
+	if len(files) != 5 {
+		t.Errorf("expected 5 generated files, got %d", len(files))
 	}
 
 	// Assert manifest exists and is valid

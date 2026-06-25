@@ -11,8 +11,11 @@ import (
 
 	"kv/internal/boundary"
 	"kv/internal/context"
+	"kv/internal/diff"
 	"kv/internal/fsutil"
 	"kv/internal/opencode"
+	"kv/internal/quality"
+	"kv/internal/report"
 	"kv/internal/runner"
 	"kv/internal/session"
 	"kv/internal/task"
@@ -388,6 +391,41 @@ func main() {
 				}
 			}
 
+		case "scan":
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			detected, err := workspace.ScanWorkspaceApps(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error scanning workspace: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Println("Detected apps:")
+			fmt.Println()
+			for _, app := range detected {
+				fmt.Printf("- %s\n  Path: %s\n  Stack: %s\n\n", app.ID, app.Path, app.Stack)
+			}
+
+			wsName := filepath.Base(cwd)
+			if wsName == "." || wsName == "/" {
+				wsName = "workspace"
+			}
+			wsYaml := &workspace.WorkspaceYaml{
+				Workspace: workspace.WorkspaceInfo{
+					Name: wsName,
+					Apps: detected,
+				},
+			}
+			err = workspace.SaveWorkspaceYaml(cwd, wsYaml)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving workspace configuration: %v\n", err)
+			} else {
+				fmt.Println("Workspace configuration saved to kv-workspace.yaml")
+			}
+
 		case "show":
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -609,6 +647,94 @@ func main() {
 		}
 		subCommand := os.Args[2]
 		switch subCommand {
+		case "init":
+			fs := flag.NewFlagSet("session init", flag.ContinueOnError)
+			idPtr := fs.String("id", "", "Session ID")
+			goalPtr := fs.String("goal", "", "Objective of the session")
+			appsPtr := fs.String("apps", "", "Comma-separated list of app_name=app_path")
+			vaultPtr := fs.String("vault", "", "Comma-separated list of vault sources")
+			writablePtr := fs.String("writable", "", "Comma-separated list of writable paths")
+
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			if *goalPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --goal flag is required.")
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				wsDir = cwd
+			}
+
+			appsMap := make(map[string]string)
+			if *appsPtr != "" {
+				parts := strings.Split(*appsPtr, ",")
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p == "" {
+						continue
+					}
+					subParts := strings.SplitN(p, "=", 2)
+					if len(subParts) == 2 {
+						appsMap[strings.TrimSpace(subParts[0])] = strings.TrimSpace(subParts[1])
+					} else {
+						path := strings.TrimSpace(subParts[0])
+						appsMap[filepath.Base(path)] = path
+					}
+				}
+			}
+
+			var vaultSources []string
+			if *vaultPtr != "" {
+				parts := strings.Split(*vaultPtr, ",")
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						vaultSources = append(vaultSources, p)
+					}
+				}
+			}
+
+			var writablePaths []string
+			if *writablePtr != "" {
+				parts := strings.Split(*writablePtr, ",")
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						writablePaths = append(writablePaths, p)
+					}
+				}
+			}
+
+			sess, err := session.InitSession(wsDir, *idPtr, *goalPtr, appsMap, vaultSources, writablePaths)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to initialize session: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Pre-create structures
+			sessionDir := filepath.Join(wsDir, ".kv", "sessions", sess.ID)
+			_ = os.WriteFile(filepath.Join(sessionDir, "context.md"), []byte(""), 0644)
+			_ = os.WriteFile(filepath.Join(sessionDir, "opencode.md"), []byte(""), 0644)
+			_ = os.WriteFile(filepath.Join(sessionDir, "audit.jsonl"), []byte(""), 0644)
+			_ = os.WriteFile(filepath.Join(sessionDir, "report.md"), []byte(""), 0644)
+
+			_ = session.LogEvent(wsDir, sess.ID, "session_created", nil)
+
+			fmt.Println("Session initialized successfully!")
+			fmt.Printf("  ID:            %s\n", sess.ID)
+			fmt.Printf("  Goal:          %s\n", sess.Goal)
+			fmt.Printf("  Session File:  .kv/sessions/%s/session.yaml\n", sess.ID)
+
 		case "start":
 			fs := flag.NewFlagSet("session start", flag.ContinueOnError)
 			goalPtr := fs.String("goal", "", "Objective of the session")
@@ -663,6 +789,82 @@ func main() {
 				fmt.Printf("    - %s\n", p)
 			}
 			fmt.Printf("  Session File:  .kv/sessions/%s/session.yaml\n", sess.ID)
+
+		case "validate":
+			fs := flag.NewFlagSet("session validate", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to validate")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+			if *sessionPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+				printSessionUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			sess, err := session.LoadSession(wsDir, *sessionPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load session: %v\n", err)
+				os.Exit(1)
+			}
+
+			err = boundary.ValidateSessionContract(wsDir, sess)
+			if err != nil {
+				_ = session.LogEvent(wsDir, sess.ID, "session_validated", map[string]interface{}{"status": "failed"})
+				fmt.Fprintf(os.Stderr, "Session contract is invalid: %v\n", err)
+				os.Exit(1)
+			}
+
+			_ = session.LogEvent(wsDir, sess.ID, "session_validated", map[string]interface{}{"status": "passed"})
+
+			fmt.Println("Session valid")
+			fmt.Println()
+			fmt.Println("Allowed paths:")
+			for _, p := range sess.Boundary.AllowedPaths {
+				rel, err := filepath.Rel(wsDir, p)
+				if err == nil {
+					fmt.Printf("- ./%s\n", rel)
+				} else {
+					fmt.Printf("- %s\n", p)
+				}
+			}
+			fmt.Println()
+			fmt.Println("Writable paths:")
+			for _, p := range sess.Boundary.WritablePaths {
+				rel, err := filepath.Rel(wsDir, p)
+				if err == nil {
+					fmt.Printf("- ./%s\n", rel)
+				} else {
+					fmt.Printf("- %s\n", p)
+				}
+			}
+			fmt.Println()
+			fmt.Println("Readonly paths:")
+			for _, p := range sess.Boundary.ReadonlyPaths {
+				rel, err := filepath.Rel(wsDir, p)
+				if err == nil {
+					fmt.Printf("- ./%s\n", rel)
+				} else {
+					fmt.Printf("- %s\n", p)
+				}
+			}
+			fmt.Println()
+			fmt.Println("Policy:")
+			fmt.Printf("- network: %v\n", sess.Policy.Network)
+			fmt.Printf("- env read: %v\n", sess.Policy.AllowEnvRead)
+			fmt.Printf("- delete files: %v\n", sess.Policy.AllowDeleteFiles)
 
 		case "diff":
 			fs := flag.NewFlagSet("session diff", flag.ContinueOnError)
@@ -748,6 +950,58 @@ func main() {
 			if len(report.Denied) > 0 || len(report.OutOfScope) > 0 {
 				fmt.Fprintln(os.Stderr, "\nWARNING: There are changes violating session boundaries. Run 'kv boundary validate' for details.")
 			}
+
+		case "report":
+			fs := flag.NewFlagSet("session report", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to report")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+			if *sessionPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+				printSessionUsage()
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			sess, err := session.LoadSession(wsDir, *sessionPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to load session: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Generate quality gates on the fly
+			qualityResults, qualityPassed, err := quality.RunQualityGates(wsDir, sess)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error running quality gates: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Generate diff summary on the fly
+			_, err = diff.GenerateDiffSummary(wsDir, sess)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error generating diff summary: %v\n", err)
+				os.Exit(1)
+			}
+
+			err = report.GenerateSessionReport(wsDir, sess, qualityResults, qualityPassed)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error generating report: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Report successfully generated under .kv/sessions/%s/report.md\n", sess.ID)
 
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown session subcommand '%s'\n", subCommand)
@@ -874,6 +1128,131 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown opencode subcommand '%s'\n", subCommand)
 			printOpenCodeUsage()
+			os.Exit(1)
+		}
+
+	case "run":
+		fs := flag.NewFlagSet("run", flag.ContinueOnError)
+		sessionPtr := fs.String("session", "", "Session ID to run")
+		dryRunPtr := fs.Bool("dry-run", false, "Simulate execution without running the agent")
+		err := fs.Parse(os.Args[2:])
+		if err != nil {
+			os.Exit(1)
+		}
+
+		if *sessionPtr == "" {
+			fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+			printGeneralUsage()
+			os.Exit(1)
+		}
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+			os.Exit(1)
+		}
+		wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		err = runner.RunSession(wsDir, *sessionPtr, *dryRunPtr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running session: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "quality":
+		if len(os.Args) < 3 || os.Args[2] != "run" {
+			fmt.Fprintln(os.Stderr, "Usage: kv quality run --session <session-id>")
+			os.Exit(1)
+		}
+		fs := flag.NewFlagSet("quality run", flag.ContinueOnError)
+		sessionPtr := fs.String("session", "", "Session ID to run quality gates for")
+		err := fs.Parse(os.Args[3:])
+		if err != nil {
+			os.Exit(1)
+		}
+		if *sessionPtr == "" {
+			fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+			os.Exit(1)
+		}
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+			os.Exit(1)
+		}
+		wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		sess, err := session.LoadSession(wsDir, *sessionPtr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
+			os.Exit(1)
+		}
+
+		results, passed, err := quality.RunQualityGates(wsDir, sess)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running quality gates: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("Quality Gates Results:")
+		fmt.Println()
+		for cmd, res := range results {
+			fmt.Printf("- Command: `%s` -> %s\n", cmd, res)
+		}
+		fmt.Println()
+		if passed {
+			fmt.Println("Quality Gates: PASSED")
+		} else {
+			fmt.Println("Quality Gates: FAILED")
+			os.Exit(1)
+		}
+
+	case "diff":
+		if len(os.Args) >= 3 && os.Args[2] == "summarize" {
+			fs := flag.NewFlagSet("diff summarize", flag.ContinueOnError)
+			sessionPtr := fs.String("session", "", "Session ID to summarize diff for")
+			err := fs.Parse(os.Args[3:])
+			if err != nil {
+				os.Exit(1)
+			}
+			if *sessionPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: --session flag is required.")
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceYamlDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			sess, err := session.LoadSession(wsDir, *sessionPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading session: %v\n", err)
+				os.Exit(1)
+			}
+
+			summary, err := diff.GenerateDiffSummary(wsDir, sess)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error generating diff summary: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(summary)
+		} else {
+			fmt.Fprintln(os.Stderr, "Usage: kv diff summarize --session <session-id>")
 			os.Exit(1)
 		}
 

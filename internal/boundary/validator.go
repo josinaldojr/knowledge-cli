@@ -2,6 +2,7 @@ package boundary
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,6 +38,98 @@ func (r *Report) IsValid() bool {
 	return len(r.Denied) == 0 && len(r.OutOfScope) == 0
 }
 
+// checkPathExists resolves a path relative to workspaceDir and checks if it exists.
+// It handles glob patterns by checking the existence of their base directory.
+func checkPathExists(workspaceDir, path string) error {
+	absPath := path
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Clean(filepath.Join(workspaceDir, path))
+	}
+
+	// If it contains globs, find the non-glob directory prefix
+	if strings.ContainsAny(path, "*?[]") {
+		idx := strings.IndexAny(path, "*?[]")
+		dirPart := path[:idx]
+		dirPart = filepath.Dir(dirPart)
+		if !filepath.IsAbs(dirPart) {
+			dirPart = filepath.Clean(filepath.Join(workspaceDir, dirPart))
+		}
+		if _, err := os.Stat(dirPart); err != nil {
+			return fmt.Errorf("base directory for glob pattern '%s' does not exist: %w", path, err)
+		}
+		return nil
+	}
+
+	if _, err := os.Stat(absPath); err != nil {
+		return fmt.Errorf("path '%s' does not exist: %w", path, err)
+	}
+	return nil
+}
+
+// ValidateSessionContract validates that a session configuration is correct.
+func ValidateSessionContract(workspaceDir string, sess *session.Session) error {
+	// 1. Validate existence of apps
+	for _, app := range sess.Apps {
+		if err := checkPathExists(workspaceDir, app.Path); err != nil {
+			return fmt.Errorf("invalid app '%s': %w", app.Name, err)
+		}
+	}
+
+	// 2. Validate existence of vault sources if enabled
+	if sess.Vault.Enabled {
+		for _, src := range sess.Vault.Sources {
+			if err := checkPathExists(workspaceDir, src); err != nil {
+				return fmt.Errorf("invalid vault source '%s': %w", src, err)
+			}
+		}
+	}
+
+	// 3. Validate existence of allowed_paths, writable_paths, readonly_paths
+	for _, p := range sess.Boundary.AllowedPaths {
+		if err := checkPathExists(workspaceDir, p); err != nil {
+			return fmt.Errorf("invalid allowed path '%s': %w", p, err)
+		}
+	}
+	for _, p := range sess.Boundary.WritablePaths {
+		if err := checkPathExists(workspaceDir, p); err != nil {
+			return fmt.Errorf("invalid writable path '%s': %w", p, err)
+		}
+	}
+	for _, p := range sess.Boundary.ReadonlyPaths {
+		if err := checkPathExists(workspaceDir, p); err != nil {
+			return fmt.Errorf("invalid readonly path '%s': %w", p, err)
+		}
+	}
+
+	// 4. Validate writable_paths are within allowed_paths
+	for _, wPath := range sess.Boundary.WritablePaths {
+		allowed := false
+		for _, aPath := range sess.Boundary.AllowedPaths {
+			matched, err := MatchPath(aPath, wPath)
+			if err == nil && matched {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("writable path '%s' is not within any allowed paths", wPath)
+		}
+	}
+
+	// 5. Validate readonly_paths do not conflict with writable_paths
+	for _, rPath := range sess.Boundary.ReadonlyPaths {
+		for _, wPath := range sess.Boundary.WritablePaths {
+			matchedRW, errRW := MatchPath(rPath, wPath)
+			matchedWR, errWR := MatchPath(wPath, rPath)
+			if (errRW == nil && matchedRW) || (errWR == nil && matchedWR) {
+				return fmt.Errorf("readonly path '%s' conflicts with writable path '%s'", rPath, wPath)
+			}
+		}
+	}
+
+	return nil
+}
+
 // ValidateSession changes checks git changes against the session's boundaries.
 func ValidateSession(workspaceDir string, sess *session.Session, includeUntracked bool) (*Report, error) {
 	// Resolve symlinks for workspaceDir
@@ -57,13 +150,22 @@ func ValidateSession(workspaceDir string, sess *session.Session, includeUntracke
 	}
 
 	// 2. Resolve and normalize patterns
-	allowedPatterns := make([]string, len(sess.Boundary.AllowedPaths))
-	for i, p := range sess.Boundary.AllowedPaths {
+	allowedWritePaths := sess.Boundary.WritablePaths
+	if len(allowedWritePaths) == 0 {
+		// Fallback to legacy behavior where allowed_paths represents the allowed write zones
+		allowedWritePaths = sess.Boundary.AllowedPaths
+	}
+	allowedPatterns := make([]string, len(allowedWritePaths))
+	for i, p := range allowedWritePaths {
 		allowedPatterns[i] = ResolvePattern(workspaceDir, p)
 	}
 
-	deniedPatterns := make([]string, len(sess.Boundary.DeniedPaths))
-	for i, p := range sess.Boundary.DeniedPaths {
+	deniedWritePaths := sess.Boundary.ReadonlyPaths
+	// Also append legacy DeniedPaths to be backward-compatible
+	deniedWritePaths = append(deniedWritePaths, sess.Boundary.DeniedPaths...)
+
+	deniedPatterns := make([]string, len(deniedWritePaths))
+	for i, p := range deniedWritePaths {
 		deniedPatterns[i] = ResolvePattern(workspaceDir, p)
 	}
 
