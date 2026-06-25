@@ -48,4 +48,15 @@ func TestValidateCommand(t *testing.T) {
 	if err != nil || !allowed {
 		t.Errorf("expected command 'echo hello' to be allowed, got error: %v", err)
 	}
+
+	// 6. Check interactive prompt blocking when non-interactive (no TTY)
+	polAsk := session.PolicyContract{
+		AllowDependencyInstall: "ask",
+		AllowMigrations:        "ask",
+	}
+	_, err = ValidateCommand("npm install express", polAsk)
+	if err == nil {
+		t.Error("expected error for npm install under 'ask' in non-interactive environment, got nil")
+	}
 }
+

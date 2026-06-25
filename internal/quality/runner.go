@@ -74,7 +74,11 @@ func RunQualityGates(workspaceDir string, sess *session.Session) (map[string]str
 
 		if runErr != nil {
 			allPassed = false
-			results[cmdClean] = fmt.Sprintf("FAILED\n%s", combined)
+			outputMsg := fmt.Sprintf("FAILED\n%s", combined)
+			if strings.Contains(cmdClean, "go test") && (strings.Contains(combined, "no Go files") || strings.Contains(combined, "no packages") || strings.Contains(combined, "matched no packages")) {
+				outputMsg += "\nTip: Go tests require at least one Go file in the module to run. Consider creating a dummy Go file if this is a skeleton app."
+			}
+			results[cmdClean] = outputMsg
 			_ = session.LogEvent(workspaceDir, sess.ID, "quality_finished", map[string]interface{}{
 				"command": cmdClean,
 				"status":  "failed",

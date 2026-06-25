@@ -235,9 +235,14 @@ func main() {
 			}
 
 			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			var needInit bool
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				// Fallback to workspace yaml directory, or cwd
+				wsDir, err = workspace.FindWorkspaceYamlDir(cwd)
+				if err != nil {
+					wsDir = cwd
+				}
+				needInit = true
 			}
 
 			absVault, err := fsutil.ResolveAbs(vaultPath)
@@ -274,6 +279,13 @@ func main() {
 
 			// Update legacy marker too
 			_, _ = workspace.WriteMarker(wsDir, cfg.VaultPath)
+
+			if needInit {
+				// Initialize the workspace templates/workflows since we are doing it on the fly
+				workflowsDir := filepath.Join(wsDir, workspace.ConfigDirName, "workflows")
+				_ = os.MkdirAll(workflowsDir, 0755)
+				_ = workspace.Init(cfg.VaultPath)
+			}
 
 			fmt.Printf("Vault attached successfully: %s\n", cfg.VaultPath)
 

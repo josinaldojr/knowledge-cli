@@ -3,6 +3,7 @@ package quality
 import (
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,3 +58,53 @@ func TestRunQualityGates(t *testing.T) {
 		t.Errorf("expected 'false' to be FAILED, got: %s", resFalse)
 	}
 }
+
+func TestRunQualityGatesGoTestNoFiles(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "quality-test-go-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a dummy go.mod file
+	goModContent := "module dummy\n\ngo 1.20\n"
+	err = ioutil.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644)
+	if err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	sess := &session.Session{
+		ID:   "sess-quality-go-test",
+		Goal: "test quality go test",
+		Boundary: session.Boundary{
+			AllowedPaths:  []string{tmpDir},
+			WritablePaths: []string{tmpDir},
+		},
+		Quality: session.QualityContract{
+			Enabled: true,
+			Commands: []string{
+				"go test ./...",
+			},
+		},
+		Policy: session.PolicyContract{
+			AllowDependencyInstall: "true",
+			AllowMigrations:        "true",
+			AllowDocker:            true,
+		},
+	}
+
+	results, passed, err := RunQualityGates(tmpDir, sess)
+	if err != nil {
+		t.Fatalf("RunQualityGates failed: %v", err)
+	}
+
+	if passed {
+		t.Error("expected quality gates to fail since there are no Go files")
+	}
+
+	resGoTest, ok := results["go test ./..."]
+	if !ok || !strings.Contains(resGoTest, "Tip: Go tests require at least one Go file") {
+		t.Errorf("expected suggestion tip in results, got: %s", resGoTest)
+	}
+}
+

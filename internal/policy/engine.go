@@ -42,6 +42,9 @@ func ValidateCommand(commandLine string, pol session.PolicyContract) (bool, erro
 			return false, fmt.Errorf("policy violation: dependency installation is blocked")
 		}
 		if pol.AllowDependencyInstall == "ask" || pol.AllowDependencyInstall == "" {
+			if !isStdinTerminal() {
+				return false, fmt.Errorf("policy warning: blocked dependency install in non-interactive environment (no TTY)")
+			}
 			// Prompt the user if interactive
 			fmt.Printf("Policy Alert: Command tries to install dependencies: '%s'\n", cmdClean)
 			fmt.Print("Allow dependency installation? (y/N): ")
@@ -74,6 +77,9 @@ func ValidateCommand(commandLine string, pol session.PolicyContract) (bool, erro
 			return false, fmt.Errorf("policy violation: database migrations are blocked")
 		}
 		if pol.AllowMigrations == "ask" || pol.AllowMigrations == "" {
+			if !isStdinTerminal() {
+				return false, fmt.Errorf("policy warning: blocked migrations in non-interactive environment (no TTY)")
+			}
 			fmt.Printf("Policy Alert: Command tries to run migrations: '%s'\n", cmdClean)
 			fmt.Print("Allow running migrations? (y/N): ")
 			reader := bufio.NewReader(os.Stdin)
@@ -97,3 +103,12 @@ func ValidateCommand(commandLine string, pol session.PolicyContract) (bool, erro
 
 	return true, nil
 }
+
+func isStdinTerminal() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
