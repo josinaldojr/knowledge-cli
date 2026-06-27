@@ -23,12 +23,17 @@ import (
 	"kv/internal/wiki"
 	"kv/internal/workflow"
 	"kv/internal/workspace"
+	"kv/internal/tui"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		printGeneralUsage()
-		os.Exit(1)
+		err := tui.Start()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting TUI: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 
 	command := os.Args[1]
@@ -36,6 +41,14 @@ func main() {
 	switch command {
 	case "help", "-h", "--help":
 		printGeneralUsage()
+		os.Exit(0)
+
+	case "tui":
+		err := tui.Start()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting TUI: %v\n", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 
 	case "init":
@@ -1389,6 +1402,7 @@ func printGeneralUsage() {
 	fmt.Println("  kv <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Available commands:")
+	fmt.Println("  tui                   Launch the interactive Terminal User Interface (default)")
 	fmt.Println("  init [--vault <path>] Initialize workspace with .kv/config.yaml")
 	fmt.Println("  find <query>          Search files inside the active vault")
 	fmt.Println("  context build <workflow> <task-id>  Generate .opencode/context.md from context pack")
