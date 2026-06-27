@@ -5,8 +5,25 @@
 document.addEventListener('DOMContentLoaded', () => {
     // STATE MANAGEMENT
     let activePath = null;
+    let activeDocPath = null;
+    let activeMode = 'wiki'; // 'wiki' or 'docs'
     let chatHistory = [];
     const expandedFolders = new Set(['01-global', '04-systems', '05-decisions']); // expand by default
+
+    // DOCUMENTATION CHAPTERS LIST
+    const docChapters = [
+        { name: "✨ 01. Introdução", path: "docs/01-introducao.md" },
+        { name: "🔍 02. Workspace & Scanner", path: "docs/02-workspace-scan.md" },
+        { name: "🚀 03. Ciclo de Vida da Sessão", path: "docs/03-session-lifecycle.md" },
+        { name: "📦 04. Context Builder", path: "docs/04-context-builder.md" },
+        { name: "🏃 05. Execução & Auditoria", path: "docs/05-execution-harness.md" },
+        { name: "🚦 06. Quality Gates", path: "docs/06-quality-gates.md" },
+        { name: "⚡ 07. Diff Summarizer", path: "docs/07-diff-summarizer.md" },
+        { name: "📑 08. Relatório da Sessão", path: "docs/08-session-report.md" },
+        { name: "📥 09. LLM Wiki (Karpathy)", path: "docs/09-llm-wiki.md" },
+        { name: "🛠️ 10. Utilitários do Vault", path: "docs/10-vault-utils.md" },
+        { name: "🔌 11. Integração OpenCode", path: "docs/11-opencode-integration.md" }
+    ];
 
     // DOM ELEMENTS
     const vaultTree = document.getElementById('vault-tree');
@@ -17,6 +34,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnClearChat = document.getElementById('btn-clear-chat');
     const btnRefreshTree = document.getElementById('btn-refresh-tree');
 
+    // NAVIGATION TABS DOM
+    const btnNavWiki = document.getElementById('btn-nav-wiki');
+    const btnNavDocs = document.getElementById('btn-nav-docs');
+    const sidebarTitleText = document.getElementById('sidebar-title-text');
+
     // SEARCH MODAL DOM
     const searchTriggerBtn = document.getElementById('search-trigger-btn');
     const searchModal = document.getElementById('search-modal');
@@ -26,6 +48,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // INITIALIZATION
     loadDirectoryTree();
+    setupNavigation();
+    initMermaid();
+
+    function initMermaid() {
+        if (typeof mermaid !== 'undefined') {
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: 'dark',
+                securityLevel: 'loose'
+            });
+        }
+    }
 
     // 1. DIRECTORY TREE LOADER
     async function loadDirectoryTree() {
@@ -135,7 +169,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 2. DOCUMENT SELECTOR & RENDERER
     async function selectDocument(path) {
-        activePath = path;
+        if (activeMode === 'docs') {
+            activeDocPath = path;
+        } else {
+            activePath = path;
+        }
         
         // Update active class in sidebar tree
         document.querySelectorAll('.tree-file').forEach(el => {
@@ -147,11 +185,19 @@ document.addEventListener('DOMContentLoaded', () => {
         docViewer.innerHTML = '<div class="loading-state">Carregando documento...</div>';
 
         try {
-            const res = await fetch(`/api/wiki/doc?path=${encodeURIComponent(path)}`);
-            if (!res.ok) throw new Error('Não foi possível ler o arquivo');
-            const data = await res.json();
+            let content = '';
+            if (activeMode === 'docs') {
+                const res = await fetch(path);
+                if (!res.ok) throw new Error('Não foi possível ler o arquivo');
+                content = await res.text();
+            } else {
+                const res = await fetch(`/api/wiki/doc?path=${encodeURIComponent(path)}`);
+                if (!res.ok) throw new Error('Não foi possível ler o arquivo');
+                const data = await res.json();
+                content = data.content;
+            }
             
-            renderMarkdown(data.content, path);
+            renderMarkdown(content, path);
         } catch (err) {
             console.error(err);
             docViewer.innerHTML = `<div class="error-state">Erro ao abrir documento: ${err.message}</div>`;
@@ -196,11 +242,18 @@ document.addEventListener('DOMContentLoaded', () => {
             html += `</div>`;
         }
 
-        // Parse markdown content using Marked.js
-        html += marked.parse(markdown);
+        // Parse markdown content using Marked.js with preprocessed alerts
+        const processedMarkdown = preprocessMarkdown(markdown);
+        html += marked.parse(processedMarkdown);
 
         docViewer.innerHTML = html;
         docViewer.scrollTop = 0;
+
+        // Render Mermaid Diagrams if present
+        renderMermaidDiagrams();
+
+        // Apply copy buttons to code blocks
+        setupCopyButtons();
 
         // Hijack links within markdown to enable SPA navigation if they are internal
         docViewer.querySelectorAll('a').forEach(a => {
@@ -216,6 +269,163 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         });
+    }
+
+    // Helper to preprocess markdown alerts
+    function preprocessMarkdown(markdown) {
+        // Matches blockquotes of type > [!NOTE] etc.
+        const alertRegex = />\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>\s*.*\n?)*)/gi;
+        return markdown.replace(alertRegex, (match, type, content) => {
+            const cleanContent = content.split('\n')
+                                        .map(line => line.replace(/^\s*>\s?/, ''))
+                                        .join('\n');
+            
+            let emoji = '📖';
+            let label = 'Nota';
+            const uType = type.toUpperCase();
+            if (uType === 'TIP') { emoji = '💡'; label = 'Dica'; }
+            else if (uType === 'IMPORTANT') { emoji = '⚠️'; label = 'Importante'; }
+            else if (uType === 'WARNING') { emoji = '🔸'; label = 'Atenção'; }
+            else if (uType === 'CAUTION') { emoji = '🚨'; label = 'Cuidado'; }
+            
+            return `<div class="alert-box alert-${uType.toLowerCase()}"><div class="alert-title">${emoji} ${label}</div>${marked.parse(cleanContent)}</div>`;
+        });
+    }
+
+    // Render Mermaid Diagrams helper
+    function renderMermaidDiagrams() {
+        if (typeof mermaid === 'undefined') return;
+        
+        const mermaidBlocks = docViewer.querySelectorAll('pre code.language-mermaid');
+        if (mermaidBlocks.length === 0) return;
+
+        mermaidBlocks.forEach(code => {
+            const pre = code.parentNode;
+            const div = document.createElement('div');
+            div.className = 'mermaid';
+            div.textContent = code.textContent;
+            pre.parentNode.replaceChild(div, pre);
+        });
+
+        try {
+            if (typeof mermaid.run === 'function') {
+                mermaid.run();
+            } else if (typeof mermaid.init === 'function') {
+                mermaid.init(undefined, docViewer.querySelectorAll('.mermaid'));
+            }
+        } catch (err) {
+            console.error('Erro ao renderizar Mermaid:', err);
+        }
+    }
+
+    // Copy to clipboard setup
+    function setupCopyButtons() {
+        docViewer.querySelectorAll('pre').forEach(pre => {
+            if (pre.parentNode.classList.contains('code-block-container')) return;
+
+            const container = document.createElement('div');
+            container.className = 'code-block-container';
+            pre.parentNode.insertBefore(container, pre);
+            container.appendChild(pre);
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'copy-code-btn';
+            copyBtn.innerText = 'Copiar';
+            container.appendChild(copyBtn);
+
+            copyBtn.addEventListener('click', async () => {
+                const codeText = pre.innerText;
+                try {
+                    await navigator.clipboard.writeText(codeText);
+                    copyBtn.innerText = 'Copiado!';
+                    copyBtn.classList.add('copied');
+                    setTimeout(() => {
+                        copyBtn.innerText = 'Copiar';
+                        copyBtn.classList.remove('copied');
+                    }, 2000);
+                } catch (err) {
+                    console.error('Falha ao copiar código:', err);
+                }
+            });
+        });
+    }
+
+    // Navigation setup
+    function setupNavigation() {
+        btnNavWiki.addEventListener('click', () => {
+            if (activeMode === 'wiki') return;
+            activeMode = 'wiki';
+            btnNavWiki.classList.add('active');
+            btnNavDocs.classList.remove('active');
+            sidebarTitleText.innerText = 'Vault Explorer';
+            btnRefreshTree.style.display = 'flex';
+            loadDirectoryTree();
+            
+            if (activePath) {
+                selectDocument(activePath);
+            } else {
+                showWelcomeScreen();
+            }
+        });
+
+        btnNavDocs.addEventListener('click', () => {
+            if (activeMode === 'docs') return;
+            activeMode = 'docs';
+            btnNavDocs.classList.add('active');
+            btnNavWiki.classList.remove('active');
+            sidebarTitleText.innerText = 'Documentação';
+            btnRefreshTree.style.display = 'none';
+            renderDocsMenu();
+            
+            if (activeDocPath) {
+                selectDocument(activeDocPath);
+            } else if (docChapters.length > 0) {
+                selectDocument(docChapters[0].path);
+            }
+        });
+    }
+
+    function renderDocsMenu() {
+        vaultTree.innerHTML = '';
+        docChapters.forEach(chapter => {
+            const fileLink = document.createElement('a');
+            fileLink.className = 'tree-file';
+            if (activeDocPath === chapter.path) {
+                fileLink.classList.add('active');
+            }
+            fileLink.href = `#${chapter.path}`;
+            fileLink.innerHTML = `<span>${chapter.name}</span>`;
+            
+            fileLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                selectDocument(chapter.path);
+            });
+            vaultTree.appendChild(fileLink);
+        });
+    }
+
+    function showWelcomeScreen() {
+        docViewer.innerHTML = `
+            <div class="welcome-screen">
+                <div class="welcome-icon">📖</div>
+                <h1>Bem-vindo à LLM Wiki do kv</h1>
+                <p>Selecione um documento no painel esquerdo ou utilize a pesquisa rápida para começar.</p>
+                <div class="welcome-features">
+                    <div class="feature-card">
+                        <h4>Compilação Automática</h4>
+                        <p>Notas cruas da inbox são compiladas e organizadas por IA no cofre.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Links Cruzados</h4>
+                        <p>Menções a termos de arquitetura e ADRs são vinculadas automaticamente.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h4>Assistente RAG</h4>
+                        <p>Tire dúvidas técnicas diretamente com a IA no chat lateral.</p>
+                    </div>
+                </div>
+            </div>
+        `;
     }
 
     // Helper to resolve paths like "04-systems/../05-decisions/adr.md" to "05-decisions/adr.md"

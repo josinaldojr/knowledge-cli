@@ -806,3 +806,186 @@ button, input, textarea {
         border-top: 1px solid var(--border-color);
     }
 }
+
+/* ==========================================================================
+   DOCUMENTATION & NEW UI ADDITIONS
+   ========================================================================== */
+
+/* Header Navigation Switcher */
+.header-nav {
+    display: flex;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    padding: 2px;
+    border-radius: 8px;
+    gap: 2px;
+    margin-left: 20px;
+    margin-right: auto;
+}
+
+.nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: var(--transition-smooth);
+}
+
+.nav-btn svg {
+    opacity: 0.7;
+    transition: var(--transition-smooth);
+}
+
+.nav-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.nav-btn:hover svg {
+    opacity: 1;
+}
+
+.nav-btn.active {
+    color: white;
+    background: var(--accent-gradient);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+    font-weight: 600;
+}
+
+.nav-btn.active svg {
+    opacity: 1;
+}
+
+/* Custom Alert Boxes (GitHub style) */
+.alert-box {
+    padding: 14px 18px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    border-left: 4px solid transparent;
+}
+
+.alert-title {
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.alert-note {
+    background: rgba(99, 102, 241, 0.06);
+    border-left-color: #6366f1; /* Indigo */
+    color: #cbd5e1;
+}
+.alert-note .alert-title {
+    color: #818cf8;
+}
+
+.alert-tip {
+    background: rgba(16, 185, 129, 0.06);
+    border-left-color: #10b981; /* Emerald */
+    color: #cbd5e1;
+}
+.alert-tip .alert-title {
+    color: #34d399;
+}
+
+.alert-important {
+    background: rgba(168, 85, 247, 0.06);
+    border-left-color: #a855f7; /* Purple */
+    color: #cbd5e1;
+}
+.alert-important .alert-title {
+    color: #c084fc;
+}
+
+.alert-warning {
+    background: rgba(245, 158, 11, 0.06);
+    border-left-color: #f59e0b; /* Amber */
+    color: #cbd5e1;
+}
+.alert-warning .alert-title {
+    color: #fbbf24;
+}
+
+.alert-caution {
+    background: rgba(239, 68, 68, 0.06);
+    border-left-color: #ef4444; /* Red */
+    color: #cbd5e1;
+}
+.alert-caution .alert-title {
+    color: #f87171;
+}
+
+/* Copy to Clipboard for Pre Code blocks */
+.code-block-container {
+    position: relative;
+    margin-bottom: 16px;
+}
+
+.code-block-container pre {
+    margin-bottom: 0;
+}
+
+.copy-code-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: var(--transition-smooth);
+    backdrop-filter: blur(4px);
+}
+
+.code-block-container:hover .copy-code-btn {
+    opacity: 1;
+}
+
+.copy-code-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.copy-code-btn.copied {
+    background: rgba(16, 185, 129, 0.15);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #34d399;
+    opacity: 1 !important;
+}
+
+/* Custom styling inside documentation viewer */
+.doc-viewer h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 20px;
+}
+
+.doc-viewer h2 {
+    font-size: 18px;
+    margin-top: 24px;
+    margin-bottom: 12px;
+}
+
+.doc-viewer h3 {
+    font-size: 15px;
+    margin-top: 18px;
+    margin-bottom: 8px;
+}

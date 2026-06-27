@@ -146,6 +146,43 @@ kv task run feature-auth 002-add-login --runner opencode
 
 ---
 
+## LLM Wiki (Compilação Incremental - Paradigma Karpathy)
+
+O `kv` implementa o conceito de **LLM Wiki** proposto por Andrej Karpathy. Em vez de utilizar apenas buscas RAG reativas que recuperam pedaços de texto temporários na hora da consulta, o sistema compila e consolida de forma incremental e persistente as notas brutas em páginas de documentação canônicas (Markdown) totalmente interligadas no seu cofre de conhecimento.
+
+### Comandos da Wiki
+
+Para interagir com as APIs da LLM, defina a chave do Gemini no ambiente: `export GEMINI_API_KEY="sua-chave"`.
+
+#### 1. Compilar Notas da Inbox (`kv wiki compile`)
+Consome rascunhos ou notas desorganizadas colocados em `00-inbox/`. A IA decide se deve criar novas páginas (em subpastas como `04-systems/` ou `07-runbooks/`) ou mesclar novos fatos em páginas existentes, atualizando as datas de modificação no frontmatter e resolvendo contradições. Os arquivos originais são movidos para `10-references/archive/`.
+```bash
+# Processa as notas da inbox e atualiza a Wiki
+kv wiki compile
+```
+
+#### 2. Atualizar Links Cruzados (`kv wiki link`)
+Escaneia as páginas canônicas do cofre e insere de forma automática caminhos relativos de markdown (ex: `[Auth Flow](../04-systems/auth-flow.md)`) nas referências aos termos técnicos, mantendo a Wiki interligada (ideal para navegação no Obsidian ou VS Code).
+```bash
+# Atualiza todas as referências cruzadas da Wiki
+kv wiki link
+```
+
+#### 3. Consultar a Wiki via Linha de Comando (`kv wiki ask`)
+Pesquisa na Wiki local por correspondência de termos e monta um contexto rico para a LLM responder à sua pergunta citando os arquivos de origem.
+```bash
+kv wiki ask "Como funciona a autenticação JWT?"
+```
+
+#### 4. Interface Web Local-First (`kv wiki serve`)
+Sobe uma interface Web premium local-first com tema dark e glassmorphism. Permite navegar na árvore de documentos do Vault, visualizar arquivos markdown renderizados na hora, realizar pesquisas globais ultra rápidas (**Cmd + K**) e ter um chat conversacional RAG com histórico de mensagens.
+```bash
+# Inicia a interface interativa (padrão: porta 8080)
+kv wiki serve --port 8080
+```
+
+---
+
 ## Outros Comandos Utilitários
 
 ### Busca no Vault
