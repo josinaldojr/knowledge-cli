@@ -23,11 +23,12 @@ type ArgDefinition struct {
 }
 
 type Command struct {
-	Name        string          // CLI name of command, e.g. "session start"
-	DisplayName string          // Display name, e.g. "Start Session"
-	Description string          // Short help text
-	Group       string          // Category group (e.g., "Session", "Vault", "Workspace")
-	Args        []ArgDefinition // Arguments and flags
+	Name          string          // CLI name of command, e.g. "session start"
+	DisplayName   string          // Display name, e.g. "Start Session"
+	Description   string          // Short help text
+	Group         string          // Category group (e.g., "Session", "Vault", "Workspace")
+	Args          []ArgDefinition // Arguments and flags
+	IsLongRunning bool            // if true, command runs as a background process/daemon
 }
 
 func GetCommands() []Command {
@@ -540,10 +541,11 @@ func GetCommands() []Command {
 			},
 		},
 		{
-			Name:        "wiki serve",
-			DisplayName: "Serve Web Wiki",
-			Description: "Launch the premium web wiki client server locally",
-			Group:       "LLM Wiki",
+			Name:          "wiki serve",
+			DisplayName:   "Serve Web Wiki",
+			Description:   "Launch the premium web wiki client server locally",
+			Group:         "LLM Wiki",
+			IsLongRunning: true,
 			Args: []ArgDefinition{
 				{
 					Key:         "--port",

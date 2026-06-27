@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"kv/internal/vault"
 	"kv/internal/workspace"
@@ -39,6 +40,7 @@ type Model struct {
 	ExecOutput      string
 	ExecErr         error
 	ExitCode        int
+	RunningCmd      *exec.Cmd
 
 	WorkspaceDir    string
 	WorkspaceName   string
@@ -230,6 +232,53 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				binPath = "kv"
 			}
 
+			if m.Form.Command.IsLongRunning {
+				c := exec.Command(binPath, args...)
+				cwd, _ := os.Getwd()
+				c.Dir = cwd
+				m.RunningCmd = c
+
+				errStart := c.Start()
+				if errStart != nil {
+					m.Executing = false
+					m.ExecOutput = "Failed to start process: " + errStart.Error()
+					m.ExecErr = errStart
+					m.ExitCode = 1
+					return m, nil
+				}
+
+				exitChan := make(chan error, 1)
+				go func() {
+					exitChan <- c.Wait()
+				}()
+
+				execCmd := func() tea.Msg {
+					select {
+					case errWait := <-exitChan:
+						code := 0
+						if errWait != nil {
+							code = 1
+							if exitErr, ok := errWait.(*exec.ExitError); ok {
+								code = exitErr.ExitCode()
+							}
+						}
+						return ExecResultMsg{
+							Stdout: "Process exited immediately.",
+							Err:    errWait,
+							Code:   code,
+						}
+					case <-time.After(800 * time.Millisecond):
+						// Still running!
+						return ExecResultMsg{
+							Stdout: "Server started successfully and is running in the background.",
+							Err:    nil,
+							Code:   0,
+						}
+					}
+				}
+				return m, execCmd
+			}
+
 			// We need to execute the binary with the arguments
 			execCmd := func() tea.Msg {
 				c := exec.Command(binPath, args...)
@@ -257,6 +306,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
+			if m.RunningCmd != nil && m.RunningCmd.Process != nil {
+				_ = m.RunningCmd.Process.Signal(os.Interrupt)
+				time.Sleep(100 * time.Millisecond)
+				_ = m.RunningCmd.Process.Kill()
+				_ = m.RunningCmd.Wait()
+			}
 			return m, tea.Quit
 
 		case "q":
@@ -310,6 +365,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if m.ActivePane == PaneExecution {
 			// Press enter or esc to return to command list
 			if msg.String() == "enter" || msg.String() == "esc" {
+				if m.RunningCmd != nil && m.RunningCmd.Process != nil {
+					_ = m.RunningCmd.Process.Signal(os.Interrupt)
+					time.Sleep(100 * time.Millisecond)
+					_ = m.RunningCmd.Process.Kill()
+					_ = m.RunningCmd.Wait()
+					m.RunningCmd = nil
+				}
 				m.ActivePane = PaneSidebar
 				m.Form = nil
 			}

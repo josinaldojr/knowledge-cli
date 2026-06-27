@@ -164,7 +164,13 @@ func (m Model) View() string {
 				out = "<no output returned>"
 			}
 			content.WriteString(outputStyle.Render(out) + "\n\n")
-			content.WriteString(lipgloss.NewStyle().Italic(true).Foreground(accentColor).Render("Press [ENTER] or [ESC] to return to the commands list.") + "\n")
+			var footerText string
+			if activeCmd.IsLongRunning {
+				footerText = "Press [ENTER] or [ESC] to stop the server and return."
+			} else {
+				footerText = "Press [ENTER] or [ESC] to return to the commands list."
+			}
+			content.WriteString(lipgloss.NewStyle().Italic(true).Foreground(accentColor).Render(footerText) + "\n")
 		}
 	}
 
@@ -186,7 +192,11 @@ func (m Model) View() string {
 		if m.Executing {
 			helpText = "Running command... Please wait."
 		} else {
-			helpText = "enter/esc: go back • ctrl+c: quit"
+			if activeCmd.IsLongRunning {
+				helpText = "enter/esc: stop server and go back • ctrl+c: stop server and quit"
+			} else {
+				helpText = "enter/esc: go back • ctrl+c: quit"
+			}
 		}
 	}
 
