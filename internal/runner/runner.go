@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"kv/internal/boundary"
@@ -14,6 +15,9 @@ import (
 	"kv/internal/report"
 	"kv/internal/session"
 )
+
+// runCommandOverride is a helper to override exec.Command in tests.
+var runCommandOverride = exec.Command
 
 // AgentRunResult holds the details of agent execution.
 type AgentRunResult struct {
@@ -105,8 +109,34 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, dryRun bo
 		fmt.Printf("  - %s\n", p)
 	}
 
-	fmt.Println("OpenCode Runner Initialized successfully.")
-	fmt.Println("Make your changes in the workspace and ensure they respect boundaries.")
+	// Read prompt file content
+	promptBytes, err := ioutil.ReadFile(promptPath)
+	if err != nil {
+		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
+			"status": "failed",
+			"error":  fmt.Sprintf("failed to read prompt file: %v", err),
+		})
+		return nil, fmt.Errorf("failed to read prompt file: %w", err)
+	}
+	promptContent := string(promptBytes)
+
+	// Execute opencode run
+	cmd := runCommandOverride("opencode", "run", promptContent)
+	cmd.Dir = r.WorkspaceDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = os.Environ()
+
+	err = cmd.Run()
+	if err != nil {
+		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
+			"status": "failed",
+			"error":  err.Error(),
+		})
+		return nil, fmt.Errorf("opencode execution failed: %w", err)
+	}
+
 	_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
 		"status": "success",
 	})
@@ -200,8 +230,19 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType string) error {
 			fmt.Println("Warning: OpenCode configuration seems unhealthy. Run 'kv opencode doctor' or 'kv opencode install' to fix.")
 		}
 
-		fmt.Println("\nOpenCode Runner Initialized successfully.")
-		fmt.Printf("The task is now configured. OpenCode will automatically read '.opencode/context.md' inside your workspace to perform changes.\n")
+		promptContent := "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
+		cmd := runCommandOverride("opencode", "run", promptContent)
+		cmd.Dir = workspaceDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.Env = os.Environ()
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("opencode execution failed: %w", err)
+		}
+
+		fmt.Println("\nOpenCode Runner executed successfully.")
 		return nil
 
 	default:
