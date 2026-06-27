@@ -101,7 +101,7 @@ Analisa a integridade da configuração da sessão e garante que:
 #### 4. Execução Controlada (`kv run`)
 Executa o fluxo da sessão utilizando o runner selecionado.
 - Com a flag `--dry-run`, exibe um resumo detalhado contendo tamanho estimado do contexto, boundaries de leitura/escrita configuradas, comandos de qualidade e status geral de validação sem executar o agente.
-- Em execução normal, valida as boundaries, escreve eventos no log de auditoria append-only (`audit.jsonl`), executa os Quality Gates, o Diff Summarizer e gera o relatório final.
+- Em execução normal com o runner **OpenCode** (padrão), o `kv` realiza a validação de boundaries físicas, lê o conteúdo do prompt gerado em `.kv/sessions/<session-id>/opencode.md`, e **executa o comando `opencode run "<prompt>"`** herdando o terminal interativo (`Stdin`, `Stdout` e `Stderr` compartilhados). Após a execução do agente, o `kv` roda os Quality Gates, o Diff Summarizer, audita os logs no arquivo append-only (`audit.jsonl`) e gera o relatório final.
 
 #### 5. Quality Gates (`kv quality run`)
 Executa os comandos de qualidade (testes unitários, linters) do contrato da sessão a partir dos diretórios de suas respectivas aplicações, validando a segurança com o Policy Engine antes da execução e registrando o resultado no log de auditoria.
@@ -140,6 +140,7 @@ kv context build feature-auth 002-add-login
 *Gera `.opencode/context.md` na raiz do projeto.*
 
 ### 4. Executar a Task
+Executa a task no runner selecionado. Quando integrado com o **OpenCode**, o `kv` executa `opencode run` instruindo o agente a ler o contexto gerado em `.opencode/context.md` e realizar as mudanças necessárias:
 ```bash
 kv task run feature-auth 002-add-login --runner opencode
 ```

@@ -22,16 +22,20 @@ O comando `--dry-run` não invoca os agentes ou ferramentas de escrita. Em vez d
 
 ## 🏃 Execução de Produção
 
-Para executar a sessão de forma real (integrando com o runner ativo):
+Para executar a sessão de forma real:
 
 ```bash
 kv run --session session-auth-refactor
 ```
 
 ### O que acontece durante a execução ativa?
-1. **Ativação do Sandbox**: O framework monitora chamadas de sistema e acessos a arquivos.
-2. **Gravação do Log de Auditoria (`audit.jsonl`)**: Cada arquivo lido, escrito ou comando executado pelo runner é imediatamente registrado com timestamp no log de auditoria append-only.
-3. **Validação das Restrições do Policy Engine**: Se o runner tentar realizar ações proibidas (ex: realizar conexões externas à rede quando `allow_network` for `false`), o processo é imediatamente bloqueado.
+1. **Ativação do Runner (OpenCode)**: O `kv` resolve qual runner de agente utilizar (padrão: `opencode`). Ele lê o arquivo `.kv/sessions/<session-id>/opencode.md` contendo as diretrizes e executa o binário do **OpenCode** local via `opencode run "<prompt>"`.
+2. **Herdamento de Streams**: O processo subprocessado herda `os.Stdin`, `os.Stdout` e `os.Stderr`, mantendo a interatividade total para consentimento de permissões de leitura/escrita de arquivos e comandos diretamente na janela de terminal atual.
+3. **Auditoria e Finalização**: Uma vez concluído o processamento do OpenCode, o `kv` recupera o fluxo de controle e realiza a auditoria pós-execução:
+   - **Quality Gates**: Executa automaticamente os testes de qualidade (unitários, linters) da aplicação.
+   - **Diff Summarizer**: Analisa as mudanças de código e cria um resumo estruturado em `diff-summary.md` respeitando as restrições físicas de boundaries.
+   - **Gravação do Log de Auditoria (`audit.jsonl`)**: Registra timestamps e estados das etapas realizadas de forma append-only.
+   - **Session Report**: Une o objetivo, status das boundaries, testes rodados e diffs para gerar o relatório consolidado `report.md`.
 
 ---
 
