@@ -135,6 +135,17 @@ func (f *Form) focusActive() {
 	}
 }
 
+func (f *Form) UpdateWidth(width int) {
+	for idx := range f.Fields {
+		field := &f.Fields[idx]
+		if field.Arg.Type == InputTypeText {
+			field.TextInput.Width = width - 12
+		} else if field.Arg.Type == InputTypeTextArea {
+			field.TextArea.SetWidth(width - 12)
+		}
+	}
+}
+
 func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -159,6 +170,21 @@ func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 			if f.SubmitActive {
 				// Form submitted
 				return f, func() tea.Msg { return FormSubmitMsg{} }
+			}
+			if len(f.Fields) > 0 && f.ActiveIndex < len(f.Fields) {
+				field := &f.Fields[f.ActiveIndex]
+				if field.Arg.Type == InputTypeMultiSelect {
+					if field.MultiHover >= 0 && field.MultiHover < len(field.MultiChoices) {
+						field.MultiChecked[field.MultiHover] = !field.MultiChecked[field.MultiHover]
+					}
+					return f, nil
+				}
+				if field.Arg.Type == InputTypeTextArea {
+					// Pass enter to the textarea to insert a newline
+					var cmd tea.Cmd
+					field.TextArea, cmd = field.TextArea.Update(msg)
+					return f, cmd
+				}
 			}
 			// If not submit, Tab forward
 			if len(f.Fields) > 0 {
@@ -264,7 +290,7 @@ func (f *Form) View(themeTheme lipgloss.Style) string {
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).MarginBottom(1)
 	s.WriteString(titleStyle.Render(fmt.Sprintf("Configure: %s", f.Command.DisplayName)) + "\n")
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).MarginBottom(2)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).MarginBottom(1)
 	s.WriteString(descStyle.Render(f.Command.Description) + "\n\n")
 
 	for idx, field := range f.Fields {
@@ -277,76 +303,171 @@ func (f *Form) View(themeTheme lipgloss.Style) string {
 			fieldLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E3E3E6"))
 		}
 
-		s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
-		if field.Arg.Required {
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
-		}
-		s.WriteString("\n")
-
-		if field.Arg.Description != "" && field.Arg.Type != InputTypeText && field.Arg.Type != InputTypeTextArea {
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(field.Arg.Description) + "\n")
-		}
-
 		switch field.Arg.Type {
 		case InputTypeText:
 			if isActive {
+				s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
+				if field.Arg.Required {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
+				}
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#8B8B97")).Render("  (Press TAB to go to next field)") + "\n")
 				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Render("▶ ") + field.TextInput.View() + "\n")
 			} else {
-				s.WriteString("  " + field.TextInput.View() + "\n")
+				val := field.TextInput.Value()
+				if val == "" {
+					val = "(empty)"
+				}
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("  " + field.Arg.Label + ": ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(val) + "\n")
 			}
 
 		case InputTypeTextArea:
 			if isActive {
+				s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
+				if field.Arg.Required {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
+				}
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#8B8B97")).Render("  (Press TAB to go to next field)") + "\n")
 				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Render("▶ ") + "\n" + field.TextArea.View() + "\n")
 			} else {
-				s.WriteString("  \n" + field.TextArea.View() + "\n")
+				val := field.TextArea.Value()
+				if val == "" {
+					val = "(empty)"
+				} else {
+					val = strings.ReplaceAll(val, "\n", " ")
+					if len(val) > 40 {
+						val = val[:37] + "..."
+					}
+				}
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("  " + field.Arg.Label + ": ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(val) + "\n")
 			}
 
 		case InputTypeSelect:
-			if len(field.MultiChoices) == 0 {
-				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FF4A4A")).Render("  No options available.") + "\n")
-			} else {
-				for cIdx, choice := range field.MultiChoices {
-					isHovered := cIdx == field.MultiHover && isActive
-					isSelected := cIdx == field.SelectIndex
-
-					var line string
-					if isSelected {
-						line = fmt.Sprintf("● %s", choice)
-					} else {
-						line = fmt.Sprintf("○ %s", choice)
+			if isActive {
+				s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
+				if field.Arg.Required {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
+				}
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#8B8B97")).Render("  (Press UP/DOWN arrows to choose, ENTER/TAB to go to next field)") + "\n")
+				if field.Arg.Description != "" {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("  " + field.Arg.Description) + "\n")
+				}
+				if len(field.MultiChoices) == 0 {
+					s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FF4A4A")).Render("  No options available.") + "\n")
+				} else {
+					maxVisible := 5
+					start := 0
+					end := len(field.MultiChoices)
+					if end > maxVisible {
+						start = field.MultiHover - maxVisible/2
+						if start < 0 {
+							start = 0
+						}
+						end = start + maxVisible
+						if end > len(field.MultiChoices) {
+							end = len(field.MultiChoices)
+							start = end - maxVisible
+						}
 					}
 
-					if isHovered {
-						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ "+line) + "\n")
-					} else {
-						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("    "+line) + "\n")
+					if start > 0 {
+						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("    ▲ ...") + "\n")
+					}
+					for cIdx := start; cIdx < end; cIdx++ {
+						choice := field.MultiChoices[cIdx]
+						isHovered := cIdx == field.MultiHover
+						isSelected := cIdx == field.SelectIndex
+
+						var line string
+						if isSelected {
+							line = fmt.Sprintf("● %s", choice)
+						} else {
+							line = fmt.Sprintf("○ %s", choice)
+						}
+
+						if isHovered {
+							s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ "+line) + "\n")
+						} else {
+							s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("    "+line) + "\n")
+						}
+					}
+					if end < len(field.MultiChoices) {
+						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("    ▼ ...") + "\n")
 					}
 				}
+			} else {
+				selectedVal := "None"
+				if field.SelectIndex >= 0 && field.SelectIndex < len(field.MultiChoices) {
+					selectedVal = field.MultiChoices[field.SelectIndex]
+				}
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("  " + field.Arg.Label + ": ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(selectedVal) + "\n")
 			}
 
 		case InputTypeMultiSelect:
-			if len(field.MultiChoices) == 0 {
-				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FF4A4A")).Render("  No options available.") + "\n")
-			} else {
-				for cIdx, choice := range field.MultiChoices {
-					isHovered := cIdx == field.MultiHover && isActive
-					isChecked := field.MultiChecked[cIdx]
-
-					var box string
-					if isChecked {
-						box = "[x]"
-					} else {
-						box = "[ ]"
+			if isActive {
+				s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
+				if field.Arg.Required {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
+				}
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#8B8B97")).Render("  (Press SPACE/ENTER to select/toggle, TAB to go to next field)") + "\n")
+				if field.Arg.Description != "" {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("  " + field.Arg.Description) + "\n")
+				}
+				if len(field.MultiChoices) == 0 {
+					s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#FF4A4A")).Render("  No options available.") + "\n")
+				} else {
+					maxVisible := 5
+					start := 0
+					end := len(field.MultiChoices)
+					if end > maxVisible {
+						start = field.MultiHover - maxVisible/2
+						if start < 0 {
+							start = 0
+						}
+						end = start + maxVisible
+						if end > len(field.MultiChoices) {
+							end = len(field.MultiChoices)
+							start = end - maxVisible
+						}
 					}
 
-					line := fmt.Sprintf("%s %s", box, choice)
-					if isHovered {
-						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ "+line) + "\n")
-					} else {
-						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("    "+line) + "\n")
+					if start > 0 {
+						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("    ▲ ...") + "\n")
+					}
+					for cIdx := start; cIdx < end; cIdx++ {
+						choice := field.MultiChoices[cIdx]
+						isHovered := cIdx == field.MultiHover
+						isChecked := field.MultiChecked[cIdx]
+
+						var box string
+						if isChecked {
+							box = "[✓]"
+						} else {
+							box = "[ ]"
+						}
+
+						line := fmt.Sprintf("%s %s", box, choice)
+						if isHovered {
+							s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ "+line) + "\n")
+						} else {
+							s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("    "+line) + "\n")
+						}
+					}
+					if end < len(field.MultiChoices) {
+						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render("    ▼ ...") + "\n")
 					}
 				}
+			} else {
+				var checked []string
+				for idx, ch := range field.MultiChoices {
+					if field.MultiChecked[idx] {
+						checked = append(checked, ch)
+					}
+				}
+				valStr := "None"
+				if len(checked) > 0 {
+					valStr = strings.Join(checked, ", ")
+				}
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("  " + field.Arg.Label + ": ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(valStr) + "\n")
 			}
 
 		case InputTypeBoolean:
@@ -358,9 +479,14 @@ func (f *Form) View(themeTheme lipgloss.Style) string {
 			}
 
 			if isActive {
-				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ [ "+valStr+" ] (Press Space to toggle)") + "\n")
+				s.WriteString(fieldLabelStyle.Render(field.Arg.Label))
+				if field.Arg.Required {
+					s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF4A4A")).Render(" *"))
+				}
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#8B8B97")).Render("  (Press SPACE to toggle, ENTER/TAB to go to next field)") + "\n")
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("  ▶ [ "+valStr+" ]") + "\n")
 			} else {
-				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("    [ "+valStr+" ]") + "\n")
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E3E3E6")).Render("  " + field.Arg.Label + ": ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#8B8B97")).Render(valStr) + "\n")
 			}
 		}
 

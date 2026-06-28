@@ -989,3 +989,34 @@ button, input, textarea {
     margin-top: 18px;
     margin-bottom: 8px;
 }
+
+/* ==========================================================================
+   GRAPH VISUALIZATION STYLES
+   ========================================================================== */
+#graph-container {
+    width: 100%;
+    flex: 1;
+    position: relative;
+    background-color: var(--bg-app);
+    border-radius: 8px;
+    overflow: hidden;
+    display: none;
+}
+
+/* Disables scrollbars on content area when graph is visible */
+.content-area.graph-mode {
+    overflow: hidden !important;
+}
+
+/* Force Graph Info Tooltip Override */
+.graph-tooltip {
+    background: rgba(16, 19, 23, 0.9) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 6px !important;
+    color: var(--text-primary) !important;
+    padding: 6px 12px !important;
+    font-family: var(--font-sans) !important;
+    font-size: 12px !important;
+    box-shadow: var(--shadow-premium) !important;
+}

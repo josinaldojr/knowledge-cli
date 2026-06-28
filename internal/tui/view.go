@@ -148,8 +148,43 @@ func (m Model) View() string {
 			content.WriteString(statusBadge + "\n\n")
 
 			// Execution Output Box
-			content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E3E3E6")).Render("Console Output:") + "\n")
-			
+			out := strings.TrimSpace(m.ExecOutput)
+			if out == "" {
+				out = "<no output returned>"
+			}
+
+			lines := strings.Split(out, "\n")
+			maxLines := m.Height - 15 - 4
+			if maxLines < 1 {
+				maxLines = 1
+			}
+
+			maxScroll := len(lines) - maxLines
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			scrollOffset := m.ExecScrollOffset
+			if scrollOffset > maxScroll {
+				scrollOffset = maxScroll
+			}
+			if scrollOffset < 0 {
+				scrollOffset = 0
+			}
+
+			endIdx := scrollOffset + maxLines
+			if endIdx > len(lines) {
+				endIdx = len(lines)
+			}
+
+			scrollInfo := ""
+			if len(lines) > maxLines {
+				scrollInfo = fmt.Sprintf(" (Lines %d-%d of %d) [Use ↑/↓ or j/k to scroll]", scrollOffset+1, endIdx, len(lines))
+			}
+			content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E3E3E6")).Render("Console Output:"+scrollInfo) + "\n")
+
+			visibleLines := lines[scrollOffset:endIdx]
+			outSliced := strings.Join(visibleLines, "\n")
+
 			outputStyle := lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				BorderForeground(borderColor).
@@ -159,11 +194,7 @@ func (m Model) View() string {
 				Foreground(lipgloss.Color("#FFFFFF")).
 				Background(lipgloss.Color("#1B1B1E"))
 
-			out := strings.TrimSpace(m.ExecOutput)
-			if out == "" {
-				out = "<no output returned>"
-			}
-			content.WriteString(outputStyle.Render(out) + "\n\n")
+			content.WriteString(outputStyle.Render(outSliced) + "\n\n")
 			var footerText string
 			if activeCmd.IsLongRunning {
 				footerText = "Press [ENTER] or [ESC] to stop the server and return."

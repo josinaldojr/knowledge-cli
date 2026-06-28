@@ -12,7 +12,7 @@ Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) comp
 - **Workspace Config (`kv-workspace.yaml`)**: Declara e centraliza o mapeamento de múltiplos microsserviços/aplicações no projeto atual de forma declarativa.
 - **Sessões Multi-App**: Permite criar sessões operacionais focadas em objetivos específicos, vinculando apenas as aplicações necessárias e delimitando o espaço físico de leitura/escrita do Agent (`boundary.allowed_paths`).
 - **Context Builder Enriquecido**: Compila o contexto geral da sessão, gerando manifestos JSON, árvores de arquivos recursivas com limites de profundidade e exclusão de pastas pesadas (como `node_modules`, `dist`, `.git`), e sugere arquivos candidatos a alteração por proximidade ao objetivo.
-- **Workflows Versionáveis (Legado)**: Organiza os fluxos de trabalho sob `.kv/workflows/<slug>/` gerando artefatos base (`idea.md`, `prd.md`, `techspec.md`).
+- **Workflows e Tasks (Estruturados/Versionáveis)**: Organiza fluxos de trabalho sob `.kv/workflows/<slug>/`, gerando artefatos de governança (`idea.md`, `prd.md`, `techspec.md`) e gerenciando tarefas por meio de metadados em frontmatter YAML.
 
 ---
 
@@ -115,7 +115,7 @@ Consolida o progresso geral da sessão (objetivo, status de validação física 
 ---
 
 
-## Fluxo de Trabalho por Tasks (Legado)
+## Fluxo de Trabalho por Workflows e Tasks (Estruturado/Versionável)
 
 ### 1. Criar um Novo Workflow
 Crie um fluxo de trabalho estruturado para uma feature/bugfix específica:

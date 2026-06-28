@@ -2,9 +2,11 @@ package wiki
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,5 +328,84 @@ Handles credit card processing.
 	expected := "O sistema de pagamentos suporta processamento de cartão de crédito."
 	if answer != expected {
 		t.Errorf("expected answer '%s', got '%s'", expected, answer)
+	}
+}
+
+func TestHandleGraph(t *testing.T) {
+	vaultPath, cleanup := createTestVault(t)
+	defer cleanup()
+
+	// 1. Create note A that links to B
+	docAPath := filepath.Join(vaultPath, "04-systems", "payments.md")
+	docAContent := `---
+title: "Payments System"
+---
+# Payments
+This system links to [Auth Flow](auth-flow.md).
+`
+	if err := ioutil.WriteFile(docAPath, []byte(docAContent), 0644); err != nil {
+		t.Fatalf("failed to write doc A: %v", err)
+	}
+
+	// 2. Create note B that links to A via wikilink
+	docBPath := filepath.Join(vaultPath, "04-systems", "auth-flow.md")
+	docBContent := `---
+title: "Auth Flow"
+---
+# Auth Flow
+This links back to [[04-systems/payments]].
+`
+	if err := ioutil.WriteFile(docBPath, []byte(docBContent), 0644); err != nil {
+		t.Fatalf("failed to write doc B: %v", err)
+	}
+
+	// Instantiate Server
+	server := NewServer(vaultPath, nil, 8080)
+
+	// Create request
+	req, err := http.NewRequest("GET", "/api/wiki/graph", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	// Record response
+	w := httptest.NewRecorder()
+	server.handleGraph(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", resp.StatusCode)
+	}
+
+	// Parse body
+	var data GraphData
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+
+	// Assertions
+	if len(data.Nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(data.Nodes))
+	}
+
+	nodesMap := make(map[string]GraphNode)
+	for _, n := range data.Nodes {
+		nodesMap[n.ID] = n
+	}
+
+	if _, ok := nodesMap["04-systems/payments.md"]; !ok {
+		t.Errorf("expected node '04-systems/payments.md' to exist")
+	} else if nodesMap["04-systems/payments.md"].Title != "Payments System" {
+		t.Errorf("expected title 'Payments System', got '%s'", nodesMap["04-systems/payments.md"].Title)
+	}
+
+	if _, ok := nodesMap["04-systems/auth-flow.md"]; !ok {
+		t.Errorf("expected node '04-systems/auth-flow.md' to exist")
+	}
+
+	// There should be 2 links
+	if len(data.Links) != 2 {
+		t.Errorf("expected 2 links, got %d", len(data.Links))
 	}
 }

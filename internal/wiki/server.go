@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -22,6 +23,25 @@ type TreeNode struct {
 	Path     string     `json:"path"`
 	IsDir    bool       `json:"is_dir"`
 	Children []TreeNode `json:"children,omitempty"`
+}
+
+// GraphNode represents a node in the wiki link graph.
+type GraphNode struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Group string `json:"group"`
+}
+
+// GraphLink represents a directed connection between two wiki documents.
+type GraphLink struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
+// GraphData encapsulates the nodes and links of the vault graph.
+type GraphData struct {
+	Nodes []GraphNode `json:"nodes"`
+	Links []GraphLink `json:"links"`
 }
 
 // Server encapsulates the wiki HTTP server configurations.
@@ -56,6 +76,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/wiki/doc", s.handleDocContent)
 	mux.HandleFunc("/api/wiki/query", s.handleQuery)
 	mux.HandleFunc("/api/wiki/chat", s.handleChat)
+	mux.HandleFunc("/api/wiki/graph", s.handleGraph)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", s.Port)
 	fmt.Printf("LLM Wiki Web Server rodando em http://localhost:%d\n", s.Port)
@@ -245,6 +266,157 @@ Nenhum documento relevante foi encontrado no cofre. Responda amigavelmente infor
 
 	resp := map[string]string{
 		"answer": answer,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleGraph extracts cross-links and returns nodes and links data for graph visualization.
+func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	index, err := BuildIndex(s.VaultPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to build index: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 1. Build a set of all valid relative file paths in the vault for target verification
+	validPaths := make(map[string]bool)
+	for _, entry := range index {
+		relPath, err := filepath.Rel(s.VaultPath, entry.Path)
+		if err == nil {
+			// Normalize to use forward slashes
+			relPathNorm := filepath.ToSlash(relPath)
+			validPaths[relPathNorm] = true
+		}
+	}
+
+	nodes := []GraphNode{}
+	links := []GraphLink{}
+	linkSet := make(map[string]bool) // To avoid duplicate links
+
+	// Regex to match markdown links: [text](target.md) or [text](target.md#section)
+	mdLinkRegex := regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
+	// Regex to match wikilinks: [[target]] or [[target|display]]
+	wikiLinkRegex := regexp.MustCompile(`\[\[([^\]|]+)(?:\|[^\]]+)?\]\]`)
+
+	for _, entry := range index {
+		relPath, err := filepath.Rel(s.VaultPath, entry.Path)
+		if err != nil {
+			continue
+		}
+		relPathNorm := filepath.ToSlash(relPath)
+
+		// Determine the group (top-level directory name)
+		group := "root"
+		parts := strings.Split(relPathNorm, "/")
+		if len(parts) > 1 {
+			group = parts[0]
+		}
+
+		nodes = append(nodes, GraphNode{
+			ID:    relPathNorm,
+			Title: entry.Title,
+			Group: group,
+		})
+
+		// Find links in content
+		sourceDir := filepath.Dir(relPathNorm)
+
+		// Helper to resolve and record a target link
+		addLink := func(target string) {
+			// Remove anchor fragment if exists
+			if idx := strings.Index(target, "#"); idx != -1 {
+				target = target[:idx]
+			}
+			target = strings.TrimSpace(target)
+			if target == "" {
+				return
+			}
+
+			// Skip remote URLs or other protocols
+			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "mailto:") {
+				return
+			}
+
+			// 1. Try directly relative to the vault root (common for Obsidian wikilinks)
+			resolvedDirect := filepath.ToSlash(filepath.Clean(target))
+			if validPaths[resolvedDirect] {
+				if resolvedDirect != relPathNorm {
+					linkKey := relPathNorm + " -> " + resolvedDirect
+					if !linkSet[linkKey] {
+						linkSet[linkKey] = true
+						links = append(links, GraphLink{
+							Source: relPathNorm,
+							Target: resolvedDirect,
+						})
+					}
+				}
+				return
+			}
+
+			// 2. Otherwise resolve relative to sourceDir (standard markdown relative links)
+			var resolved string
+			if filepath.IsAbs(target) {
+				resolved = filepath.Clean(strings.TrimPrefix(target, "/"))
+			} else {
+				resolved = filepath.Clean(filepath.Join(sourceDir, target))
+			}
+			resolvedNorm := filepath.ToSlash(resolved)
+
+			// Validate target exists in our vault index
+			if validPaths[resolvedNorm] && resolvedNorm != relPathNorm {
+				linkKey := relPathNorm + " -> " + resolvedNorm
+				if !linkSet[linkKey] {
+					linkSet[linkKey] = true
+					links = append(links, GraphLink{
+						Source: relPathNorm,
+						Target: resolvedNorm,
+					})
+				}
+			}
+		}
+
+		// 1. Process standard markdown links
+		matches := mdLinkRegex.FindAllStringSubmatch(entry.Content, -1)
+		for _, m := range matches {
+			if len(m) > 1 {
+				addLink(m[1])
+			}
+		}
+
+		// 2. Process wikilinks
+		wikiMatches := wikiLinkRegex.FindAllStringSubmatch(entry.Content, -1)
+		for _, m := range wikiMatches {
+			if len(m) > 1 {
+				// Wikilinks inside Obsidian are usually base name or path from root.
+				// If it doesn't end with .md, we append it.
+				target := strings.TrimSpace(m[1])
+				if !strings.HasSuffix(strings.ToLower(target), ".md") {
+					target = target + ".md"
+				}
+				
+				// Let's resolve it. Since it could be a path relative to vault root,
+				// check if it exists directly. If not, try relative to current dir.
+				resolvedNorm := filepath.ToSlash(filepath.Clean(target))
+				if validPaths[resolvedNorm] {
+					addLink(target)
+				} else {
+					// Try relative to current directory
+					addLink(target)
+				}
+			}
+		}
+	}
+
+	resp := GraphData{
+		Nodes: nodes,
+		Links: links,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

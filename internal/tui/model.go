@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -38,13 +39,15 @@ type Model struct {
 	Executing       bool
 	ExecCmdLine     string
 	ExecOutput      string
+	ExecScrollOffset int
 	ExecErr         error
 	ExitCode        int
 	RunningCmd      *exec.Cmd
 
 	WorkspaceDir    string
 	WorkspaceName   string
-	WorkspaceApps   []string // List of App IDs
+	WorkspaceApps   []string          // List of App IDs
+	WorkspaceAppPaths map[string]string // Maps App ID -> App Path
 	ActiveVault     string
 	ExistingSessions []string // List of Session IDs
 
@@ -96,6 +99,7 @@ func (m *Model) reloadWorkspaceInfo() {
 	}
 
 	m.WorkspaceApps = nil
+	m.WorkspaceAppPaths = make(map[string]string)
 	m.ExistingSessions = nil
 	m.WorkspaceName = "None"
 	m.WorkspaceDir = ""
@@ -110,6 +114,7 @@ func (m *Model) reloadWorkspaceInfo() {
 			m.WorkspaceName = wsYaml.Workspace.Name
 			for _, app := range wsYaml.Workspace.Apps {
 				m.WorkspaceApps = append(m.WorkspaceApps, app.ID)
+				m.WorkspaceAppPaths[app.ID] = app.Path
 			}
 		}
 	} else {
@@ -171,6 +176,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.Form != nil {
+			contentWidth := m.Width - 32 - 4
+			if contentWidth < 40 {
+				contentWidth = 40
+			}
+			m.Form.UpdateWidth(contentWidth)
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -209,6 +221,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							args = append(args, argDef.Key)
 						}
 					} else {
+						if m.Form.Command.Name == "session init" && argDef.Key == "--apps" {
+							var translated []string
+							appsList := strings.Split(val, ",")
+							for _, appID := range appsList {
+								appID = strings.TrimSpace(appID)
+								if path, exists := m.WorkspaceAppPaths[appID]; exists {
+									translated = append(translated, fmt.Sprintf("%s=%s", appID, path))
+								} else {
+									translated = append(translated, appID)
+								}
+							}
+							val = strings.Join(translated, ",")
+						}
 						args = append(args, argDef.Key, val)
 					}
 				} else {
@@ -223,6 +248,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ExecErr = nil
 			m.ExitCode = 0
 			m.ExecCmdLine = "kv " + strings.Join(args, " ")
+			m.ExecScrollOffset = 0
 			m.ActivePane = PaneExecution
 
 			// Start command execution asynchronously
@@ -346,6 +372,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := m.FilteredCmds[m.SelectedIndex]
 				if len(selected.Args) > 0 {
 					m.Form = NewForm(selected, m.WorkspaceApps, m.ExistingSessions)
+					contentWidth := m.Width - 32 - 4
+					if contentWidth < 40 {
+						contentWidth = 40
+					}
+					m.Form.UpdateWidth(contentWidth)
 					m.ActivePane = PaneContent
 				} else {
 					// No arguments, run directly!
@@ -374,6 +405,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.ActivePane = PaneSidebar
 				m.Form = nil
+			} else {
+				switch msg.String() {
+				case "up", "k":
+					if m.ExecScrollOffset > 0 {
+						m.ExecScrollOffset--
+					}
+				case "down", "j":
+					out := strings.TrimSpace(m.ExecOutput)
+					lines := strings.Split(out, "\n")
+					maxLines := m.Height - 15 - 4
+					if maxLines < 1 {
+						maxLines = 1
+					}
+					maxScroll := len(lines) - maxLines
+					if maxScroll < 0 {
+						maxScroll = 0
+					}
+					if m.ExecScrollOffset < maxScroll {
+						m.ExecScrollOffset++
+					}
+				}
 			}
 		}
 	}

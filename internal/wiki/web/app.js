@@ -22,7 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: "📑 08. Relatório da Sessão", path: "docs/08-session-report.md" },
         { name: "📥 09. LLM Wiki (Karpathy)", path: "docs/09-llm-wiki.md" },
         { name: "🛠️ 10. Utilitários do Vault", path: "docs/10-vault-utils.md" },
-        { name: "🔌 11. Integração OpenCode", path: "docs/11-opencode-integration.md" }
+        { name: "🔌 11. Integração OpenCode", path: "docs/11-opencode-integration.md" },
+        { name: "📋 12. Workflows & Tasks", path: "docs/12-workflows-tasks.md" }
     ];
 
     // DOM ELEMENTS
@@ -37,7 +38,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // NAVIGATION TABS DOM
     const btnNavWiki = document.getElementById('btn-nav-wiki');
     const btnNavDocs = document.getElementById('btn-nav-docs');
+    const btnNavGraph = document.getElementById('btn-nav-graph');
     const sidebarTitleText = document.getElementById('sidebar-title-text');
+    const graphContainer = document.getElementById('graph-container');
+    let graphInstance = null; // Store the force-graph instance
 
     // SEARCH MODAL DOM
     const searchTriggerBtn = document.getElementById('search-trigger-btn');
@@ -169,6 +173,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 2. DOCUMENT SELECTOR & RENDERER
     async function selectDocument(path) {
+        if (activeMode === 'graph') {
+            activeMode = 'wiki';
+            btnNavWiki.classList.add('active');
+            btnNavGraph.classList.remove('active');
+            sidebarTitleText.innerText = 'Vault Explorer';
+            btnRefreshTree.style.display = 'flex';
+            loadDirectoryTree();
+            
+            document.querySelector('.content-area').classList.remove('graph-mode');
+            graphContainer.style.display = 'none';
+            docViewer.style.display = 'block';
+        }
+        
         if (activeMode === 'docs') {
             activeDocPath = path;
         } else {
@@ -357,9 +374,14 @@ document.addEventListener('DOMContentLoaded', () => {
             activeMode = 'wiki';
             btnNavWiki.classList.add('active');
             btnNavDocs.classList.remove('active');
+            btnNavGraph.classList.remove('active');
             sidebarTitleText.innerText = 'Vault Explorer';
             btnRefreshTree.style.display = 'flex';
             loadDirectoryTree();
+            
+            document.querySelector('.content-area').classList.remove('graph-mode');
+            graphContainer.style.display = 'none';
+            docViewer.style.display = 'block';
             
             if (activePath) {
                 selectDocument(activePath);
@@ -373,15 +395,37 @@ document.addEventListener('DOMContentLoaded', () => {
             activeMode = 'docs';
             btnNavDocs.classList.add('active');
             btnNavWiki.classList.remove('active');
+            btnNavGraph.classList.remove('active');
             sidebarTitleText.innerText = 'Documentação';
             btnRefreshTree.style.display = 'none';
             renderDocsMenu();
+            
+            document.querySelector('.content-area').classList.remove('graph-mode');
+            graphContainer.style.display = 'none';
+            docViewer.style.display = 'block';
             
             if (activeDocPath) {
                 selectDocument(activeDocPath);
             } else if (docChapters.length > 0) {
                 selectDocument(docChapters[0].path);
             }
+        });
+
+        btnNavGraph.addEventListener('click', () => {
+            if (activeMode === 'graph') return;
+            activeMode = 'graph';
+            btnNavGraph.classList.add('active');
+            btnNavWiki.classList.remove('active');
+            btnNavDocs.classList.remove('active');
+            sidebarTitleText.innerText = 'Vault Explorer';
+            btnRefreshTree.style.display = 'flex';
+            loadDirectoryTree();
+            
+            document.querySelector('.content-area').classList.add('graph-mode');
+            docViewer.style.display = 'none';
+            graphContainer.style.display = 'block';
+            
+            renderGraph();
         });
     }
 
@@ -643,6 +687,177 @@ document.addEventListener('DOMContentLoaded', () => {
 
             searchResults.appendChild(card);
         });
+    }
+
+    // 5. GRAPH VISUALIZATION SYSTEM (Canvas-based)
+    let hoveredNode = null;
+    const neighbors = new Set();
+    const neighborLinks = new Set();
+
+    function getGroupColor(group) {
+        const colors = {
+            '00-inbox': '#f59e0b',       // Amber/Yellow
+            '01-global': '#06b6d4',      // Cyan
+            '02-domains': '#a855f7',     // Purple
+            '03-projects': '#3b82f6',    // Blue
+            '04-systems': '#10b981',     // Emerald/Green
+            '05-decisions': '#f43f5e',    // Rose/Red
+            '06-agents': '#6366f1',       // Indigo
+            '07-runbooks': '#14b8a6',     // Teal
+            '08-prompts': '#8b5cf6',      // Violet
+            '09-templates': '#6b7280',    // Gray
+            '10-references': '#d97706',   // Brown/Orange
+            'root': '#4b5563'             // Dark Gray
+        };
+        return colors[group] || '#6366f1'; // default Indigo
+    }
+
+    async function renderGraph() {
+        graphContainer.innerHTML = '<div class="loading-state" style="padding:20px;">Carregando visualização de gráfico...</div>';
+        
+        try {
+            const res = await fetch('/api/wiki/graph');
+            if (!res.ok) throw new Error('Falha ao obter dados do gráfico');
+            const graphData = await res.json();
+            
+            graphContainer.innerHTML = '';
+            
+            const nodes = graphData.nodes || [];
+            const links = graphData.links || [];
+
+            if (nodes.length === 0) {
+                graphContainer.innerHTML = '<div class="empty-state" style="padding:20px;">Nenhum documento encontrado para gerar o gráfico.</div>';
+                return;
+            }
+
+            // Calculate degrees (number of connections) to size the nodes
+            const degrees = {};
+            nodes.forEach(n => degrees[n.id] = 0);
+            links.forEach(l => {
+                degrees[l.source] = (degrees[l.source] || 0) + 1;
+                degrees[l.target] = (degrees[l.target] || 0) + 1;
+            });
+            
+            nodes.forEach(n => {
+                const deg = degrees[n.id] || 0;
+                n.val = 3 + Math.sqrt(deg) * 1.5; // log-like scaling for node size
+            });
+
+            // Initialize ForceGraph
+            graphInstance = ForceGraph()(graphContainer)
+                .width(graphContainer.clientWidth)
+                .height(graphContainer.clientHeight)
+                .graphData({ nodes, links })
+                .backgroundColor('#0b0d10')
+                .nodeId('id')
+                .nodeVal('val')
+                .linkSource('source')
+                .linkTarget('target')
+                // Node drawing
+                .nodeCanvasObject((node, ctx, globalScale) => {
+                    const label = node.title || node.id.split('/').pop().replace('.md', '');
+                    const isHovered = (node === hoveredNode || neighbors.has(node.id));
+                    const baseColor = getGroupColor(node.group);
+                    const radius = node.val;
+                    
+                    // Node circle
+                    ctx.beginPath();
+                    ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+                    
+                    if (hoveredNode) {
+                        if (node === hoveredNode) {
+                            ctx.shadowColor = baseColor;
+                            ctx.shadowBlur = 16;
+                            ctx.fillStyle = '#ffffff';
+                        } else if (neighbors.has(node.id)) {
+                            ctx.shadowColor = baseColor;
+                            ctx.shadowBlur = 10;
+                            ctx.fillStyle = baseColor;
+                        } else {
+                            ctx.shadowBlur = 0;
+                            ctx.fillStyle = 'rgba(100, 116, 139, 0.15)';
+                        }
+                    } else {
+                        ctx.shadowBlur = 0;
+                        ctx.fillStyle = baseColor;
+                    }
+                    ctx.fill();
+                    ctx.shadowBlur = 0; // reset shadow
+
+                    // Node Title text below
+                    if (globalScale > 0.85 || isHovered) {
+                        const fontSize = 11 / globalScale;
+                        ctx.font = `${isHovered ? 'bold' : 'normal'} ${fontSize}px var(--font-sans)`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillStyle = isHovered ? '#ffffff' : 'rgba(243, 244, 246, 0.7)';
+                        ctx.fillText(label, node.x, node.y + radius + fontSize * 0.9);
+                    }
+                })
+                // Hover behavior
+                .onNodeHover(node => {
+                    neighbors.clear();
+                    neighborLinks.clear();
+                    hoveredNode = node || null;
+                    if (node) {
+                        links.forEach(link => {
+                            if (link.source.id === node.id) {
+                                neighbors.add(link.target.id);
+                                neighborLinks.add(link);
+                            } else if (link.target.id === node.id) {
+                                neighbors.add(link.source.id);
+                                neighborLinks.add(link);
+                            }
+                        });
+                    }
+                    // Refresh colors/thickness/particles
+                    if (graphInstance && typeof graphInstance.refresh === 'function') {
+                        graphInstance.refresh();
+                    }
+                })
+                // Link styling
+                .linkWidth(link => {
+                    if (hoveredNode) {
+                        return neighborLinks.has(link) ? 2.0 : 0.4;
+                    }
+                    return 1.0;
+                })
+                .linkColor(link => {
+                    if (hoveredNode) {
+                        return neighborLinks.has(link) ? 'rgba(99, 102, 241, 0.85)' : 'rgba(255, 255, 255, 0.015)';
+                    }
+                    return 'rgba(255, 255, 255, 0.09)';
+                })
+                .linkDirectionalParticles(link => {
+                    // Show flowing particles along highlighted links on hover
+                    if (hoveredNode && neighborLinks.has(link)) {
+                        return 2;
+                    }
+                    return 0;
+                })
+                .linkDirectionalParticleWidth(2.5)
+                .linkDirectionalParticleSpeed(0.006)
+                // Click behavior: Navigate to file
+                .onNodeClick(node => {
+                    selectDocument(node.id);
+                });
+
+            // Adjust graph forces for Obsidian feel (nodes closer together)
+            graphInstance.d3Force('charge').strength(-80);
+            graphInstance.d3Force('link').distance(35);
+
+            // Re-center on container resize
+            window.addEventListener('resize', () => {
+                if (activeMode === 'graph' && graphInstance) {
+                    graphInstance.width(graphContainer.clientWidth);
+                    graphInstance.height(graphContainer.clientHeight);
+                }
+            });
+
+        } catch (err) {
+            console.error(err);
+            graphContainer.innerHTML = `<div class="error-state" style="padding:20px;">Erro ao inicializar o gráfico: ${err.message}</div>`;
+        }
     }
 
     // Refresh tree button
