@@ -35,6 +35,22 @@ func GetCommands() []Command {
 	return []Command{
 		// --- WORKSPACE & APPS ---
 		{
+			Name:        "init",
+			DisplayName: "Initialize AI Harness",
+			Description: "Initialize standard workspace and templates (creates .kv/config.yaml)",
+			Group:       "Workspace & Apps",
+			Args: []ArgDefinition{
+				{
+					Key:         "--vault",
+					IsFlag:      true,
+					Label:       "Vault Path",
+					Description: "Path to default Knowledge Vault (optional)",
+					Type:        InputTypeText,
+					Required:    false,
+				},
+			},
+		},
+		{
 			Name:        "workspace init",
 			DisplayName: "Initialize Workspace",
 			Description: "Initialize workspace configuration (creates kv-workspace.yaml)",
