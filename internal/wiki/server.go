@@ -423,37 +423,55 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// isKeepableNode returns true if a node should be kept in the tree.
+func (s *Server) isKeepableNode(node TreeNode, isRootChild bool) bool {
+	if !node.IsDir {
+		return strings.ToLower(filepath.Ext(node.Name)) == ".md"
+	}
+	if len(node.Children) > 0 {
+		return true
+	}
+	if isRootChild {
+		canonicalDirs := map[string]bool{
+			"00-inbox":      true,
+			"01-global":     true,
+			"02-domains":    true,
+			"03-projects":   true,
+			"04-systems":    true,
+			"05-decisions":  true,
+			"06-agents":     true,
+			"07-runbooks":   true,
+			"08-prompts":    true,
+			"09-templates":  true,
+			"10-references": true,
+		}
+		if canonicalDirs[node.Name] {
+			return true
+		}
+	}
+	return false
+}
+
 // buildVaultTree structures the vault files in a JSON-serializable tree.
 func (s *Server) buildVaultTree() ([]TreeNode, error) {
-	// Canonical vault directories to scan
-	subdirs := []string{
-		"00-inbox",
-		"01-global",
-		"02-domains",
-		"03-projects",
-		"04-systems",
-		"05-decisions",
-		"06-agents",
-		"07-runbooks",
-		"08-prompts",
-		"09-templates",
-		"10-references",
+	files, err := ioutil.ReadDir(s.VaultPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read vault path: %v", err)
 	}
 
 	var root []TreeNode
-
-	for _, sub := range subdirs {
-		dirPath := filepath.Join(s.VaultPath, sub)
-		info, err := os.Stat(dirPath)
-		if err != nil {
-			continue // Skip folder if it doesn't exist
+	for _, f := range files {
+		fName := f.Name()
+		if strings.HasPrefix(fName, ".") || fName == "node_modules" {
+			continue
 		}
 
-		node, err := s.walkNode(dirPath, sub)
+		dirPath := filepath.Join(s.VaultPath, fName)
+		node, err := s.walkNode(dirPath, fName)
 		if err == nil {
-			// Change name to match sub folder name
-			node.Name = info.Name()
-			root = append(root, node)
+			if s.isKeepableNode(node, true) {
+				root = append(root, node)
+			}
 		}
 	}
 
@@ -490,8 +508,7 @@ func (s *Server) walkNode(absPath, relPath string) (TreeNode, error) {
 			// Walk files and folders recursively
 			childNode, err := s.walkNode(childAbs, childRel)
 			if err == nil {
-				// Only append if it's a directory or a markdown file
-				if childNode.IsDir || strings.ToLower(filepath.Ext(childNode.Name)) == ".md" {
+				if s.isKeepableNode(childNode, false) {
 					node.Children = append(node.Children, childNode)
 				}
 			}

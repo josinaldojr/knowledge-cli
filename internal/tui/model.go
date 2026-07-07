@@ -61,6 +61,22 @@ type ExecResultMsg struct {
 	Code   int
 }
 
+type ExecProgressMsg struct {
+	Chunk string
+	Chan  <-chan tea.Msg
+}
+
+type ExecFinishedMsg struct {
+	Err  error
+	Code int
+}
+
+func readProgress(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-ch
+	}
+}
+
 func NewModel() Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -177,12 +193,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		if m.Form != nil {
-			contentWidth := m.Width - 32 - 4
-			if contentWidth < 40 {
-				contentWidth = 40
-			}
-			m.Form.UpdateWidth(contentWidth)
+			cfg := m.GetLayoutConfig()
+			m.Form.UpdateWidth(cfg.ContentInnerWidth)
 		}
+
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -192,6 +206,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ExecResultMsg:
 		m.Executing = false
 		m.ExecOutput = msg.Stdout
+		m.ExecErr = msg.Err
+		m.ExitCode = msg.Code
+		m.ActivePane = PaneExecution
+		m.reloadWorkspaceInfo() // Reload state (e.g. if new app/session was added)
+		return m, nil
+
+	case ExecProgressMsg:
+		m.ExecOutput += msg.Chunk
+		// Auto-scroll to the bottom of the output
+		lines := strings.Split(m.ExecOutput, "\n")
+		m.ExecScrollOffset = len(lines)
+		return m, readProgress(msg.Chan)
+
+	case ExecFinishedMsg:
+		m.Executing = false
 		m.ExecErr = msg.Err
 		m.ExitCode = msg.Code
 		m.ActivePane = PaneExecution
@@ -305,25 +334,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, execCmd
 			}
 
-			// We need to execute the binary with the arguments
+			// We need to execute the binary with the arguments and stream progress
 			execCmd := func() tea.Msg {
 				c := exec.Command(binPath, args...)
 				cwd, _ := os.Getwd()
 				c.Dir = cwd
-				output, err := c.CombinedOutput()
-				code := 0
+
+				stdout, err := c.StdoutPipe()
 				if err != nil {
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						code = exitErr.ExitCode()
-					} else {
-						code = 1
+					return ExecFinishedMsg{Err: err, Code: 1}
+				}
+				c.Stderr = c.Stdout // combine stderr and stdout
+
+				progressChan := make(chan tea.Msg, 100)
+
+				go func() {
+					if err := c.Start(); err != nil {
+						progressChan <- ExecFinishedMsg{Err: err, Code: 1}
+						close(progressChan)
+						return
 					}
-				}
-				return ExecResultMsg{
-					Stdout: string(output),
-					Err:    err,
-					Code:   code,
-				}
+
+					buf := make([]byte, 2048)
+					for {
+						n, err := stdout.Read(buf)
+						if n > 0 {
+							progressChan <- ExecProgressMsg{
+								Chunk: string(buf[:n]),
+								Chan:  progressChan,
+							}
+						}
+						if err != nil {
+							break
+						}
+					}
+
+					errWait := c.Wait()
+					code := 0
+					if errWait != nil {
+						code = 1
+						if exitErr, ok := errWait.(*exec.ExitError); ok {
+							code = exitErr.ExitCode()
+						}
+					}
+					progressChan <- ExecFinishedMsg{Err: errWait, Code: code}
+					close(progressChan)
+				}()
+
+				// Return the first progress message or block until first chunk/finish
+				return <-progressChan
 			}
 
 			return m, execCmd
@@ -371,13 +430,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				selected := m.FilteredCmds[m.SelectedIndex]
 				if len(selected.Args) > 0 {
-					m.Form = NewForm(selected, m.WorkspaceApps, m.ExistingSessions)
-					contentWidth := m.Width - 32 - 4
-					if contentWidth < 40 {
-						contentWidth = 40
-					}
-					m.Form.UpdateWidth(contentWidth)
 					m.ActivePane = PaneContent
+					m.Form = NewForm(selected, m.WorkspaceApps, m.ExistingSessions)
+					cfg := m.GetLayoutConfig()
+					m.Form.UpdateWidth(cfg.ContentInnerWidth)
 				} else {
 					// No arguments, run directly!
 					m.Form = &Form{Command: selected}
@@ -432,3 +488,109 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(cmds...)
 }
+
+// LayoutConfig holds the calculated dimensions for TUI panels.
+type LayoutConfig struct {
+	ShowSidebar        bool
+	SidebarStacked     bool
+	SidebarInnerWidth  int
+	SidebarInnerHeight int
+	ContentInnerWidth  int
+	ContentInnerHeight int
+	OuterHeight        int
+}
+
+func (m *Model) GetLayoutConfig() LayoutConfig {
+	var overheadLines int
+	var borderHeightOverhead int
+
+	if m.Height < 28 {
+		overheadLines = 4
+		borderHeightOverhead = 2
+	} else {
+		overheadLines = 7
+		borderHeightOverhead = 4
+	}
+
+	outerHeight := m.Height - overheadLines
+	if outerHeight < 10 {
+		outerHeight = 10
+	}
+
+	// 1. Determine if sidebar should be shown
+	showSidebar := true
+	if m.ActivePane != PaneSidebar {
+		// Hide sidebar for forms and execution on normal screens
+		if m.Width < 110 {
+			showSidebar = false
+		}
+	}
+
+	// 2. If sidebar is shown, check if it should be stacked vertically
+	sidebarStacked := false
+	if showSidebar {
+		if m.ActivePane == PaneSidebar && m.Width < 100 {
+			sidebarStacked = true
+		} else if m.ActivePane != PaneSidebar && m.Width < 120 {
+			// If we show sidebar in Content/Execution pane, stack it if width < 120
+			sidebarStacked = true
+		}
+	}
+
+	// 3. Compute dimensions
+	cfg := LayoutConfig{
+		ShowSidebar:    showSidebar,
+		SidebarStacked: sidebarStacked,
+		OuterHeight:    outerHeight,
+	}
+
+	if !showSidebar {
+		cfg.SidebarInnerWidth = 0
+		cfg.SidebarInnerHeight = 0
+		cfg.ContentInnerWidth = m.Width - 4
+		cfg.ContentInnerHeight = outerHeight - borderHeightOverhead
+	} else if sidebarStacked {
+		cfg.SidebarInnerWidth = m.Width - 4
+		cfg.SidebarInnerHeight = (outerHeight / 2) - borderHeightOverhead
+		if cfg.SidebarInnerHeight < 3 {
+			cfg.SidebarInnerHeight = 3
+		}
+
+		cfg.ContentInnerWidth = m.Width - 4
+		cfg.ContentInnerHeight = outerHeight - (cfg.SidebarInnerHeight + borderHeightOverhead) - borderHeightOverhead
+		if cfg.ContentInnerHeight < 3 {
+			cfg.ContentInnerHeight = 3
+		}
+	} else {
+		// Horizontal split side-by-side
+		sidebarOuterWidth := 32
+		if sidebarOuterWidth > m.Width/3 {
+			sidebarOuterWidth = m.Width / 3
+		}
+		if sidebarOuterWidth < 24 {
+			sidebarOuterWidth = 24
+		}
+
+		cfg.SidebarInnerWidth = sidebarOuterWidth - 4
+		cfg.ContentInnerWidth = m.Width - sidebarOuterWidth - 4
+		cfg.SidebarInnerHeight = outerHeight - borderHeightOverhead
+		cfg.ContentInnerHeight = outerHeight - borderHeightOverhead
+	}
+
+	// Sanity checks to prevent negative values
+	if cfg.SidebarInnerWidth < 1 {
+		cfg.SidebarInnerWidth = 1
+	}
+	if cfg.SidebarInnerHeight < 1 {
+		cfg.SidebarInnerHeight = 1
+	}
+	if cfg.ContentInnerWidth < 1 {
+		cfg.ContentInnerWidth = 1
+	}
+	if cfg.ContentInnerHeight < 1 {
+		cfg.ContentInnerHeight = 1
+	}
+
+	return cfg
+}
+

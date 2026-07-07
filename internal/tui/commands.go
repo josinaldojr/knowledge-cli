@@ -437,6 +437,30 @@ func GetCommands() []Command {
 			},
 		},
 		{
+			Name:        "workflow run",
+			DisplayName: "Run Workflow Pipeline",
+			Description: "Run the 7-phase orchestrated workflow using OpenCode",
+			Group:       "Tasks & Workflows",
+			Args: []ArgDefinition{
+				{
+					Key:         "slug",
+					IsFlag:      false,
+					Label:       "Workflow Slug",
+					Description: "Workflow folder/identifier (slug)",
+					Type:        InputTypeText,
+					Required:    true,
+				},
+				{
+					Key:         "--prompt",
+					IsFlag:      true,
+					Label:       "Prompt / Goal",
+					Description: "Goal of the feature/bugfix task",
+					Type:        InputTypeText,
+					Required:    true,
+				},
+			},
+		},
+		{
 			Name:        "task enrich",
 			DisplayName: "Enrich Task",
 			Description: "Gather workspace information, rules, and pack task context",

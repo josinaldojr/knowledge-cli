@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kv/internal/session"
+	"kv/internal/workspace"
 )
 
 // FileStatus represents the status of a file with respect to session boundary.
@@ -141,7 +142,39 @@ func ValidateSession(workspaceDir string, sess *session.Session, includeUntracke
 	// 1. Get git changes
 	_, changedFiles, err := GetGitChanges(workspaceDir, includeUntracked)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read git changes: %w", err)
+		// Fallback: If the workspace root is not a Git repository, check individual selected apps
+		var fallbackFiles []string
+		fallbackSuccess := false
+
+		ws, wsErr := workspace.LoadWorkspaceYaml(workspaceDir)
+		if wsErr == nil {
+			appMap := make(map[string]workspace.App)
+			for _, app := range ws.Workspace.Apps {
+				appMap[app.ID] = app
+			}
+
+			fallbackSuccess = true
+			for _, appID := range sess.SelectedApps {
+				app, ok := appMap[appID]
+				if !ok {
+					continue
+				}
+				resolvedPath := app.Path
+				if !filepath.IsAbs(resolvedPath) {
+					resolvedPath = filepath.Join(workspaceDir, app.Path)
+				}
+				_, appFiles, appErr := GetGitChanges(resolvedPath, includeUntracked)
+				if appErr == nil {
+					fallbackFiles = append(fallbackFiles, appFiles...)
+				}
+			}
+		}
+
+		if fallbackSuccess {
+			changedFiles = fallbackFiles
+		} else {
+			return nil, fmt.Errorf("failed to read git changes: %w", err)
+		}
 	}
 
 	report := &Report{

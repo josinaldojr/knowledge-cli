@@ -38,7 +38,7 @@ func TestSessionStartAndRoundtrip(t *testing.T) {
 	}
 
 	goal := "Refactor API authentication"
-	sess, err := StartSession(tmpDir, ws, goal, []string{"app1"})
+	sess, err := StartSession(tmpDir, ws, goal, []string{"app1"}, "")
 	if err != nil {
 		t.Fatalf("StartSession failed: %v", err)
 	}
@@ -105,19 +105,19 @@ func TestSessionValidationErrors(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Test empty goal
-	_, err = StartSession(tmpDir, ws, "", []string{"app1"})
+	_, err = StartSession(tmpDir, ws, "", []string{"app1"}, "")
 	if err == nil {
 		t.Error("expected error for empty session goal, got nil")
 	}
 
 	// Test empty apps
-	_, err = StartSession(tmpDir, ws, "goal", []string{})
+	_, err = StartSession(tmpDir, ws, "goal", []string{}, "")
 	if err == nil {
 		t.Error("expected error for empty apps selection, got nil")
 	}
 
 	// Test non-existent app selection
-	_, err = StartSession(tmpDir, ws, "goal", []string{"nonexistent"})
+	_, err = StartSession(tmpDir, ws, "goal", []string{"nonexistent"}, "")
 	if err == nil {
 		t.Error("expected error for selecting unregistered app, got nil")
 	}

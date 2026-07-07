@@ -309,10 +309,51 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Usage: kv vault init <path>")
 				os.Exit(1)
 			}
-			err := vault.Init(os.Args[3])
+			vaultPath := os.Args[3]
+			err := vault.Init(vaultPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
+			}
+
+			// Automatically attach the vault to the current workspace after initialization
+			cwd, err := os.Getwd()
+			if err == nil {
+				wsDir, errFind := workspace.FindWorkspaceDir(cwd)
+				var needInit bool
+				if errFind != nil {
+					wsDir, errFind = workspace.FindWorkspaceYamlDir(cwd)
+					if errFind != nil {
+						wsDir = cwd
+					}
+					needInit = true
+				}
+
+				absVault, errResolve := fsutil.ResolveAbs(vaultPath)
+				if errResolve == nil {
+					cfg, errLoad := workspace.LoadConfig(wsDir)
+					if errLoad != nil {
+						cfg = &workspace.Config{}
+					}
+
+					relPath, errRel := filepath.Rel(wsDir, absVault)
+					if errRel != nil {
+						cfg.VaultPath = absVault
+					} else {
+						cfg.VaultPath = filepath.Clean(relPath)
+					}
+
+					errSave := workspace.SaveConfig(wsDir, cfg)
+					if errSave == nil {
+						_, _ = workspace.WriteMarker(wsDir, cfg.VaultPath)
+						if needInit {
+							workflowsDir := filepath.Join(wsDir, workspace.ConfigDirName, "workflows")
+							_ = os.MkdirAll(workflowsDir, 0755)
+							_ = workspace.Init(cfg.VaultPath)
+						}
+						fmt.Printf("Vault automatically attached to workspace: %s\n", cfg.VaultPath)
+					}
+				}
 			}
 		case "path":
 			cwd, err := os.Getwd()
@@ -680,6 +721,7 @@ func main() {
 			appsPtr := fs.String("apps", "", "Comma-separated list of app_name=app_path")
 			vaultPtr := fs.String("vault", "", "Comma-separated list of vault sources")
 			writablePtr := fs.String("writable", "", "Comma-separated list of writable paths")
+			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
 
 			err := fs.Parse(os.Args[3:])
 			if err != nil {
@@ -741,7 +783,7 @@ func main() {
 				}
 			}
 
-			sess, err := session.InitSession(wsDir, *idPtr, *goalPtr, appsMap, vaultSources, writablePaths)
+			sess, err := session.InitSession(wsDir, *idPtr, *goalPtr, appsMap, vaultSources, writablePaths, *agentPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to initialize session: %v\n", err)
 				os.Exit(1)
@@ -765,6 +807,7 @@ func main() {
 			fs := flag.NewFlagSet("session start", flag.ContinueOnError)
 			goalPtr := fs.String("goal", "", "Objective of the session")
 			appsPtr := fs.String("apps", "", "Comma-separated list of application IDs")
+			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
 
 			err := fs.Parse(os.Args[3:])
 			if err != nil {
@@ -800,7 +843,7 @@ func main() {
 				appIDs[i] = strings.TrimSpace(appIDs[i])
 			}
 
-			sess, err := session.StartSession(wsDir, ws, *goalPtr, appIDs)
+			sess, err := session.StartSession(wsDir, ws, *goalPtr, appIDs, *agentPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to start session: %v\n", err)
 				os.Exit(1)
@@ -1036,27 +1079,78 @@ func main() {
 		}
 
 	case "workflow":
-		if len(os.Args) < 4 || os.Args[2] != "new" {
+		if len(os.Args) < 3 {
 			printWorkflowUsage()
 			os.Exit(1)
 		}
-		slug := os.Args[3]
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		subCommand := os.Args[2]
+		switch subCommand {
+		case "new":
+			if len(os.Args) < 4 {
+				printWorkflowUsage()
+				os.Exit(1)
+			}
+			slug := os.Args[3]
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			err = workflow.NewWorkflow(wsDir, slug)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Workflow '%s' created successfully under %s/.kv/workflows/%s\n", slug, wsDir, slug)
+
+		case "run":
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
+				fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt>")
+				os.Exit(1)
+			}
+			slug := os.Args[3]
+
+			fs := flag.NewFlagSet("workflow run", flag.ContinueOnError)
+			promptPtr := fs.String("prompt", "", "The goal or prompt to execute in this workflow")
+			err := fs.Parse(os.Args[4:])
+			if err != nil {
+				os.Exit(1)
+			}
+
+			if *promptPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: Missing required --prompt flag.")
+				fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt>")
+				os.Exit(1)
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			wsDir, err := workspace.FindWorkspaceDir(cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			err = workflow.RunWorkflow(wsDir, slug, *promptPtr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "Error: Unknown workflow subcommand '%s'\n", subCommand)
+			printWorkflowUsage()
 			os.Exit(1)
 		}
-		wsDir, err := workspace.FindWorkspaceDir(cwd)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		err = workflow.NewWorkflow(wsDir, slug)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Workflow '%s' created successfully under %s/.kv/workflows/%s\n", slug, wsDir, slug)
 
 	case "task":
 		if len(os.Args) < 3 {
@@ -1093,7 +1187,7 @@ func main() {
 		case "run":
 			if len(os.Args) < 5 {
 				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
-				fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>]")
+				fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>] [--agent <agent>]")
 				os.Exit(1)
 			}
 			slug := os.Args[3]
@@ -1101,6 +1195,7 @@ func main() {
 
 			fs := flag.NewFlagSet("task run", flag.ContinueOnError)
 			runnerPtr := fs.String("runner", "opencode", "Runner type (e.g. opencode)")
+			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
 			err := fs.Parse(os.Args[5:])
 			if err != nil {
 				os.Exit(1)
@@ -1117,7 +1212,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			err = runner.RunTask(wsDir, slug, taskID, *runnerPtr)
+			err = runner.RunTask(wsDir, slug, taskID, *runnerPtr, *agentPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -1161,6 +1256,7 @@ func main() {
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		sessionPtr := fs.String("session", "", "Session ID to run")
 		dryRunPtr := fs.Bool("dry-run", false, "Simulate execution without running the agent")
+		agentPtr := fs.String("agent", "", "Agent name to override session agent config")
 		err := fs.Parse(os.Args[2:])
 		if err != nil {
 			os.Exit(1)
@@ -1183,7 +1279,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		err = runner.RunSession(wsDir, *sessionPtr, *dryRunPtr)
+		err = runner.RunSession(wsDir, *sessionPtr, *agentPtr, *dryRunPtr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running session: %v\n", err)
 			os.Exit(1)
@@ -1411,7 +1507,7 @@ func printGeneralUsage() {
 	fmt.Println("  app                   Manage workspace registered applications")
 	fmt.Println("  session               Manage multi-app development sessions")
 	fmt.Println("  boundary              Validate session boundaries")
-	fmt.Println("  workflow new <slug>   Create a versionable workflow directory")
+	fmt.Println("  workflow              Manage versionable workflows (new, run)")
 	fmt.Println("  task enrich <flow> <id>  Gather context, files, decisions and validation rules")
 	fmt.Println("  task run <flow> <id>    Run task utilizing specified runner adapter")
 	fmt.Println("  opencode              Install or inspect OpenCode agent commands integration")
@@ -1498,7 +1594,11 @@ func printBoundaryUsage() {
 
 func printWorkflowUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  kv workflow new <slug>")
+	fmt.Println("  kv workflow <subcommand> [arguments]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  new <slug>                      Create a versionable workflow directory")
+	fmt.Println("  run <slug> --prompt <prompt>    Run the 7-phase orchestrated workflow using OpenCode")
 }
 
 func printTaskUsage() {

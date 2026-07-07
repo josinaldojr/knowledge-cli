@@ -2,45 +2,7 @@ package workspace
 
 // OpencodeJsonTemplate contains the default opencode.json configuration template.
 const OpencodeJsonTemplate = `{
-  "workspace": {
-    "context": ".opencode/context.md",
-    "agents": ".opencode/agents",
-    "commands": ".opencode/commands"
-  },
-  "agents": {
-    "orchestrator": {
-      "file": ".opencode/agents/orchestrator.md"
-    },
-    "knowledge": {
-      "file": ".opencode/agents/knowledge.md"
-    },
-    "architect": {
-      "file": ".opencode/agents/architect.md"
-    },
-    "backend": {
-      "file": ".opencode/agents/backend.md"
-    },
-    "frontend": {
-      "file": ".opencode/agents/frontend.md"
-    },
-    "reviewer": {
-      "file": ".opencode/agents/reviewer.md"
-    }
-  },
-  "commands": {
-    "/kv-plan": {
-      "file": ".opencode/commands/kv-plan.md"
-    },
-    "/kv-implement": {
-      "file": ".opencode/commands/kv-implement.md"
-    },
-    "/kv-review": {
-      "file": ".opencode/commands/kv-review.md"
-    },
-    "/kv-sync": {
-      "file": ".opencode/commands/kv-sync.md"
-    }
-  }
+  "$schema": "https://opencode.ai/config.json"
 }
 `
 

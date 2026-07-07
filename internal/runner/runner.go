@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"strings"
+
 	"kv/internal/boundary"
 	"kv/internal/context"
 	"kv/internal/diff"
@@ -14,10 +16,11 @@ import (
 	"kv/internal/quality"
 	"kv/internal/report"
 	"kv/internal/session"
+	"kv/internal/task"
 )
 
-// runCommandOverride is a helper to override exec.Command in tests.
-var runCommandOverride = exec.Command
+// RunCommandOverride is a helper to override exec.Command in tests.
+var RunCommandOverride = exec.Command
 
 // AgentRunResult holds the details of agent execution.
 type AgentRunResult struct {
@@ -28,7 +31,7 @@ type AgentRunResult struct {
 
 // AgentRunner defines the interface for executing an AI agent on a session.
 type AgentRunner interface {
-	Run(sess *session.Session, promptPath string, dryRun bool) (*AgentRunResult, error)
+	Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error)
 }
 
 // OpenCodeRunner is the implementation of AgentRunner for OpenCode.
@@ -37,7 +40,7 @@ type OpenCodeRunner struct {
 }
 
 // Run executes the OpenCode agent flow.
-func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, dryRun bool) (*AgentRunResult, error) {
+func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error) {
 	// 1. Boundary check before starting
 	boundaryReport, err := boundary.ValidateSession(r.WorkspaceDir, sess, true)
 	if err != nil {
@@ -120,8 +123,26 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, dryRun bo
 	}
 	promptContent := string(promptBytes)
 
+	// Validate agent name
+	if agentName != "" {
+		defined, err := opencode.IsAgentDefined(r.WorkspaceDir, agentName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to validate agent '%s': %w", agentName, err)
+		}
+		if !defined {
+			return nil, fmt.Errorf("agent '%s' is not defined in opencode.json. Please define it before running.", agentName)
+		}
+	}
+
 	// Execute opencode run
-	cmd := runCommandOverride("opencode", "run", promptContent)
+	var args []string
+	args = append(args, "run")
+	if agentName != "" {
+		args = append(args, "--agent", agentName)
+	}
+	args = append(args, promptContent)
+
+	cmd := RunCommandOverride("opencode", args...)
 	cmd.Dir = r.WorkspaceDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -170,7 +191,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, dryRun bo
 }
 
 // RunSession executes the session flow.
-func RunSession(workspaceDir, sessionID string, dryRun bool) error {
+func RunSession(workspaceDir, sessionID, agentName string, dryRun bool) error {
 	// 1. Load session
 	sess, err := session.LoadSession(workspaceDir, sessionID)
 	if err != nil {
@@ -185,7 +206,14 @@ func RunSession(workspaceDir, sessionID string, dryRun bool) error {
 	// 3. Make sure context is built
 	promptPath := filepath.Join(workspaceDir, ".kv", "sessions", sessionID, "opencode.md")
 	if _, err := os.Stat(promptPath); os.IsNotExist(err) {
-		return fmt.Errorf("session context prompt %s not found. Please run 'kv context build --session %s' first", promptPath, sessionID)
+		fmt.Printf("Session context prompt not found. Automatically building context for session %s...\n", sessionID)
+		_, _, _, err = context.BuildSessionContext(workspaceDir, sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to automatically build session context: %w", err)
+		}
+		if _, err := os.Stat(promptPath); os.IsNotExist(err) {
+			return fmt.Errorf("session context prompt %s not found after auto-build. Please run 'kv context build --session %s' first", promptPath, sessionID)
+		}
 	}
 
 	// 4. Resolve runner and execute
@@ -196,7 +224,11 @@ func RunSession(workspaceDir, sessionID string, dryRun bool) error {
 		return fmt.Errorf("unsupported agent provider: '%s'", sess.Agent.Provider)
 	}
 
-	result, err := agentRunner.Run(sess, promptPath, dryRun)
+	if agentName == "" {
+		agentName = sess.Agent.Name
+	}
+
+	result, err := agentRunner.Run(sess, promptPath, agentName, dryRun)
 	if err != nil {
 		return err
 	}
@@ -209,7 +241,7 @@ func RunSession(workspaceDir, sessionID string, dryRun bool) error {
 }
 
 // RunTask executes a task using the specified runner. (Legacy compatible helper)
-func RunTask(workspaceDir, workflowSlug, taskID, runnerType string) error {
+func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string) error {
 	// 1. Build the context first to ensure .opencode/context.md is generated
 	fmt.Printf("Building context for task %s in workflow %s...\n", taskID, workflowSlug)
 	if err := context.BuildContext(workspaceDir, workflowSlug, taskID); err != nil {
@@ -221,17 +253,67 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType string) error {
 		runnerType = "opencode"
 	}
 
+	// If runnerType contains a slash (e.g. opencode/backend), split it
+	if strings.Contains(runnerType, "/") {
+		parts := strings.SplitN(runnerType, "/", 2)
+		runnerType = parts[0]
+		if agentName == "" {
+			agentName = parts[1]
+		}
+	}
+
+	// Load task to see if agent is defined in frontmatter
+	workflowDir := filepath.Join(workspaceDir, ".kv", "workflows", workflowSlug)
+	taskFile := filepath.Join(workflowDir, "tasks", taskID+".md")
+	var parsedTask *task.Task
+	if _, err := os.Stat(taskFile); err == nil {
+		if t, err := task.ParseTask(taskFile); err == nil {
+			parsedTask = t
+		}
+	}
+
+	if agentName == "" && parsedTask != nil {
+		if parsedTask.Frontmatter.Agent != "" {
+			agentName = parsedTask.Frontmatter.Agent
+		} else if strings.Contains(parsedTask.Frontmatter.AgentRunner, "/") {
+			parts := strings.SplitN(parsedTask.Frontmatter.AgentRunner, "/", 2)
+			agentName = parts[1]
+		}
+	}
+
 	switch runnerType {
 	case "opencode":
 		fmt.Printf("Executing task using runner: %s\n", runnerType)
+		if agentName != "" {
+			fmt.Printf("Using agent: %s\n", agentName)
+		}
 		// Check if opencode is installed/healthy
 		healthy, err := opencode.Doctor()
 		if err != nil || !healthy {
 			fmt.Println("Warning: OpenCode configuration seems unhealthy. Run 'kv opencode doctor' or 'kv opencode install' to fix.")
 		}
 
+		// Validate agent if specified
+		if agentName != "" {
+			defined, err := opencode.IsAgentDefined(workspaceDir, agentName)
+			if err != nil {
+				return fmt.Errorf("failed to validate agent '%s': %w", agentName, err)
+			}
+			if !defined {
+				return fmt.Errorf("agent '%s' is not defined in opencode.json. Please define it before running.", agentName)
+			}
+		}
+
 		promptContent := "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
-		cmd := runCommandOverride("opencode", "run", promptContent)
+
+		var args []string
+		args = append(args, "run")
+		if agentName != "" {
+			args = append(args, "--agent", agentName)
+		}
+		args = append(args, promptContent)
+
+		cmd := RunCommandOverride("opencode", args...)
 		cmd.Dir = workspaceDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

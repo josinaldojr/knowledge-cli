@@ -23,7 +23,9 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: "📥 09. LLM Wiki (Karpathy)", path: "docs/09-llm-wiki.md" },
         { name: "🛠️ 10. Utilitários do Vault", path: "docs/10-vault-utils.md" },
         { name: "🔌 11. Integração OpenCode", path: "docs/11-opencode-integration.md" },
-        { name: "📋 12. Workflows & Tasks", path: "docs/12-workflows-tasks.md" }
+        { name: "📋 12. Workflows & Tasks", path: "docs/12-workflows-tasks.md" },
+        { name: "🛠️ 13. Exemplo de Desenvolvimento", path: "docs/13-desenvolvimento-passo-a-passo.md" },
+        { name: "🖥️ 14. Interface TUI", path: "docs/14-interface-tui.md" }
     ];
 
     // DOM ELEMENTS

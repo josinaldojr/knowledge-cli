@@ -409,3 +409,71 @@ This links back to [[04-systems/payments]].
 		t.Errorf("expected 2 links, got %d", len(data.Links))
 	}
 }
+
+func TestBuildVaultTree(t *testing.T) {
+	vaultPath, cleanup := createTestVault(t)
+	defer cleanup()
+
+	// 1. Create a custom folder with markdown files
+	customDir := filepath.Join(vaultPath, "custom-project")
+	_ = fsutil.EnsureDir(customDir)
+	_ = ioutil.WriteFile(filepath.Join(customDir, "docs.md"), []byte("# Docs"), 0644)
+
+	subDir := filepath.Join(customDir, "sub")
+	_ = fsutil.EnsureDir(subDir)
+	_ = ioutil.WriteFile(filepath.Join(subDir, "notes.md"), []byte("# Notes"), 0644)
+
+	// 2. Create a custom folder with NO markdown files
+	emptyDir := filepath.Join(vaultPath, "empty-project")
+	_ = fsutil.EnsureDir(emptyDir)
+	_ = ioutil.WriteFile(filepath.Join(emptyDir, "main.go"), []byte("package main"), 0644)
+
+	// Note: createTestVault already created "01-global" empty. We expect this canonical folder to show up even if empty.
+
+	server := NewServer(vaultPath, nil, 8080)
+	tree, err := server.buildVaultTree()
+	if err != nil {
+		t.Fatalf("buildVaultTree failed: %v", err)
+	}
+
+	// Helper to find a node by name in a slice
+	findNode := func(nodes []TreeNode, name string) *TreeNode {
+		for i := range nodes {
+			if nodes[i].Name == name {
+				return &nodes[i]
+			}
+		}
+		return nil
+	}
+
+	// 1. Verify "01-global" exists
+	nodeGlobal := findNode(tree, "01-global")
+	if nodeGlobal == nil {
+		t.Errorf("expected canonical directory '01-global' to exist")
+	}
+
+	// 2. Verify "custom-project" exists and has children
+	nodeCustom := findNode(tree, "custom-project")
+	if nodeCustom == nil {
+		t.Fatalf("expected 'custom-project' to exist in tree")
+	}
+	nodeDocs := findNode(nodeCustom.Children, "docs.md")
+	if nodeDocs == nil {
+		t.Errorf("expected 'docs.md' inside 'custom-project'")
+	}
+	nodeSub := findNode(nodeCustom.Children, "sub")
+	if nodeSub == nil {
+		t.Fatalf("expected 'sub' inside 'custom-project'")
+	}
+	nodeNotes := findNode(nodeSub.Children, "notes.md")
+	if nodeNotes == nil {
+		t.Errorf("expected 'notes.md' inside 'custom-project/sub'")
+	}
+
+	// 3. Verify "empty-project" does NOT exist
+	nodeEmpty := findNode(tree, "empty-project")
+	if nodeEmpty != nil {
+		t.Errorf("expected 'empty-project' to be filtered out, but it was present")
+	}
+}
+

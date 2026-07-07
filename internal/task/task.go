@@ -17,6 +17,7 @@ type TaskFrontmatter struct {
 	Complexity         string   `yaml:"complexity"`
 	Dependencies       []string `yaml:"dependencies"`
 	AgentRunner        string   `yaml:"agent/runner"`
+	Agent              string   `yaml:"agent"`
 	Sources            []string `yaml:"sources"`
 	AcceptanceCriteria []string `yaml:"acceptanceCriteria"`
 }

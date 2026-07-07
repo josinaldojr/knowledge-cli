@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,12 +13,12 @@ import (
 )
 
 func TestRunTask(t *testing.T) {
-	// Mock runCommandOverride
-	oldOverride := runCommandOverride
-	runCommandOverride = func(name string, arg ...string) *exec.Cmd {
+	// Mock RunCommandOverride
+	oldOverride := RunCommandOverride
+	RunCommandOverride = func(name string, arg ...string) *exec.Cmd {
 		return exec.Command("true")
 	}
-	defer func() { runCommandOverride = oldOverride }()
+	defer func() { RunCommandOverride = oldOverride }()
 
 	tmpDir, err := ioutil.TempDir("", "runner-test-*")
 	if err != nil {
@@ -43,13 +44,13 @@ func TestRunTask(t *testing.T) {
 	}
 
 	// Run with unsupported runner
-	err = RunTask(tmpDir, workflowSlug, taskID, "unsupported")
+	err = RunTask(tmpDir, workflowSlug, taskID, "unsupported", "")
 	if err == nil {
 		t.Errorf("expected error for unsupported runner, got nil")
 	}
 
 	// Run with opencode
-	err = RunTask(tmpDir, workflowSlug, taskID, "opencode")
+	err = RunTask(tmpDir, workflowSlug, taskID, "opencode", "")
 	if err != nil {
 		t.Fatalf("RunTask opencode failed: %v", err)
 	}
@@ -108,6 +109,17 @@ func TestOpenCodeRunner_Run(t *testing.T) {
 		t.Fatalf("failed to write prompt file: %v", err)
 	}
 
+	// Create dummy opencode.json in workspace to validate agent
+	opencodeDir := filepath.Join(tmpDir, ".opencode")
+	err = os.MkdirAll(opencodeDir, 0755)
+	if err != nil {
+		t.Fatalf("failed to create .opencode dir: %v", err)
+	}
+	err = ioutil.WriteFile(filepath.Join(opencodeDir, "opencode.json"), []byte(`{"agents":{"backend":{}}}`), 0644)
+	if err != nil {
+		t.Fatalf("failed to write opencode.json: %v", err)
+	}
+
 	// Session config
 	sess := &session.Session{
 		ID:        sessID,
@@ -123,19 +135,19 @@ func TestOpenCodeRunner_Run(t *testing.T) {
 		},
 	}
 
-	// Mock runCommandOverride
-	oldOverride := runCommandOverride
+	// Mock RunCommandOverride
+	oldOverride := RunCommandOverride
 	var calledName string
 	var calledArgs []string
-	runCommandOverride = func(name string, arg ...string) *exec.Cmd {
+	RunCommandOverride = func(name string, arg ...string) *exec.Cmd {
 		calledName = name
 		calledArgs = arg
 		return exec.Command("true")
 	}
-	defer func() { runCommandOverride = oldOverride }()
+	defer func() { RunCommandOverride = oldOverride }()
 
 	runner := &OpenCodeRunner{WorkspaceDir: tmpDir}
-	res, err := runner.Run(sess, promptPath, false)
+	res, err := runner.Run(sess, promptPath, "backend", false)
 	if err != nil {
 		t.Fatalf("runner.Run failed: %v", err)
 	}
@@ -148,7 +160,74 @@ func TestOpenCodeRunner_Run(t *testing.T) {
 		t.Errorf("expected command 'opencode', got '%s'", calledName)
 	}
 
-	if len(calledArgs) < 2 || calledArgs[0] != "run" || calledArgs[1] != "run agent prompt" {
-		t.Errorf("expected args ['run', 'run agent prompt'], got %v", calledArgs)
+	if len(calledArgs) < 4 || calledArgs[0] != "run" || calledArgs[1] != "--agent" || calledArgs[2] != "backend" || calledArgs[3] != "run agent prompt" {
+		t.Errorf("expected args ['run', '--agent', 'backend', 'run agent prompt'], got %v", calledArgs)
 	}
 }
+
+func TestOpenCodeRunner_Run_UndefinedAgent(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "runner-test-opencode-err-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if eval, err := filepath.EvalSymlinks(tmpDir); err == nil {
+		tmpDir = eval
+	}
+
+	runGitCmd := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmpDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("failed to run git %v: %v", args, err)
+		}
+	}
+	runGitCmd("init")
+	runGitCmd("config", "user.name", "Test")
+	runGitCmd("config", "user.email", "test@example.com")
+
+	dummyFile := filepath.Join(tmpDir, "dummy.txt")
+	err = ioutil.WriteFile(dummyFile, []byte("dummy"), 0644)
+	if err != nil {
+		t.Fatalf("failed to write dummy: %v", err)
+	}
+	runGitCmd("add", "dummy.txt")
+	runGitCmd("commit", "-m", "initial commit")
+
+	sessID := "sess-opencode-err"
+	sessDir := filepath.Join(tmpDir, ".kv", "sessions", sessID)
+	err = os.MkdirAll(sessDir, 0755)
+	if err != nil {
+		t.Fatalf("failed to create session dir: %v", err)
+	}
+
+	promptPath := filepath.Join(sessDir, "opencode.md")
+	err = ioutil.WriteFile(promptPath, []byte("run agent prompt"), 0644)
+	if err != nil {
+		t.Fatalf("failed to write prompt file: %v", err)
+	}
+
+	sess := &session.Session{
+		ID:        sessID,
+		Goal:      "Test OpenCode execution validation",
+		CreatedAt: time.Now(),
+		Status:    "active",
+		Boundary: session.Boundary{
+			AllowedPaths:  []string{tmpDir},
+			WritablePaths: []string{tmpDir},
+		},
+		Agent: session.AgentContract{
+			Provider: "opencode",
+		},
+	}
+
+	runner := &OpenCodeRunner{WorkspaceDir: tmpDir}
+	_, err = runner.Run(sess, promptPath, "invalid_agent", false)
+	if err == nil {
+		t.Errorf("expected error for undefined agent, got nil")
+	} else if !strings.Contains(err.Error(), "agent 'invalid_agent' is not defined") {
+		t.Errorf("expected error to mention agent 'invalid_agent' not defined, got: %v", err)
+	}
+}
+

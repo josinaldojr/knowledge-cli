@@ -31,6 +31,7 @@ type VaultContract struct {
 // AgentContract represents agent configuration.
 type AgentContract struct {
 	Provider      string `yaml:"provider"`
+	Name          string `yaml:"name"`
 	Mode          string `yaml:"mode"`
 	ContextBudget int    `yaml:"context_budget"`
 }
@@ -85,7 +86,7 @@ func GenerateSessionID() string {
 }
 
 // InitSession creates a session based on explicit contract flags.
-func InitSession(workspaceDir string, id, goal string, appsMap map[string]string, vaultSources []string, writablePaths []string) (*Session, error) {
+func InitSession(workspaceDir string, id, goal string, appsMap map[string]string, vaultSources []string, writablePaths []string, agentName string) (*Session, error) {
 	if strings.TrimSpace(goal) == "" {
 		return nil, fmt.Errorf("session goal cannot be empty")
 	}
@@ -193,6 +194,7 @@ func InitSession(workspaceDir string, id, goal string, appsMap map[string]string
 		},
 		Agent: AgentContract{
 			Provider:      "opencode",
+			Name:          agentName,
 			Mode:          "implementation",
 			ContextBudget: 12000,
 		},
@@ -219,7 +221,7 @@ func InitSession(workspaceDir string, id, goal string, appsMap map[string]string
 }
 
 // StartSession creates, validates, and initializes a new session. (Legacy compatible helper)
-func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal string, appIDs []string) (*Session, error) {
+func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal string, appIDs []string, agentName string) (*Session, error) {
 	if strings.TrimSpace(goal) == "" {
 		return nil, fmt.Errorf("session goal cannot be empty")
 	}
@@ -279,6 +281,7 @@ func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal str
 		},
 		Agent: AgentContract{
 			Provider:      "opencode",
+			Name:          agentName,
 			Mode:          "implementation",
 			ContextBudget: 12000,
 		},
