@@ -25,7 +25,9 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: "🔌 11. Integração OpenCode", path: "docs/11-opencode-integration.md" },
         { name: "📋 12. Workflows & Tasks", path: "docs/12-workflows-tasks.md" },
         { name: "🛠️ 13. Exemplo de Desenvolvimento", path: "docs/13-desenvolvimento-passo-a-passo.md" },
-        { name: "🖥️ 14. Interface TUI", path: "docs/14-interface-tui.md" }
+        { name: "🖥️ 14. Interface TUI", path: "docs/14-interface-tui.md" },
+        { name: "⚖️ 15. Comparativo: Sessões vs Workflows", path: "docs/15-comparativo-sessoes-workflows.md" },
+        { name: "🤖 16. Modelos & Recomendações", path: "docs/16-modelos-recomendacoes.md" }
     ];
 
     // DOM ELEMENTS

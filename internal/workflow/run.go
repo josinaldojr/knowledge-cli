@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"kv/internal/context"
 	"kv/internal/review"
@@ -20,7 +21,7 @@ import (
 var runCommandOverride = exec.Command
 
 // RunWorkflow executes the 7 phases of a workflow using OpenCode.
-func RunWorkflow(workspaceDir, slug, userPrompt string) error {
+func RunWorkflow(workspaceDir, slug, userPrompt, model string) error {
 	// 1. Ensure workflow directory exists (auto-create if not)
 	workflowDir := filepath.Join(workspaceDir, workspace.ConfigDirName, "workflows", slug)
 	if _, err := os.Stat(workflowDir); os.IsNotExist(err) {
@@ -49,7 +50,7 @@ Your task:
    - Problem Statement: What problem does this idea solve?
    - Proposed Solution: High-level description of the solution.
 3. Do NOT modify any other files in the repository. Do NOT start implementing code.`, slug, userPrompt, slug)
-				return runOpenCode(workspaceDir, prompt)
+				return runOpenCode(workspaceDir, prompt, model)
 			},
 		},
 		{
@@ -63,7 +64,7 @@ Your task:
    - Key Requirements: A checklist of requirements (using markdown checkboxes '- [ ]').
    - Out of Scope: What is NOT covered by this workflow.
 3. Do NOT modify any other files. Do NOT start implementing code.`, slug, slug, slug)
-				return runOpenCode(workspaceDir, prompt)
+				return runOpenCode(workspaceDir, prompt, model)
 			},
 		},
 		{
@@ -92,7 +93,7 @@ Your task:
    ---
    Followed by a description.
 5. Do NOT modify any source code files yet.`, slug, slug, slug, slug)
-				return runOpenCode(workspaceDir, prompt)
+				return runOpenCode(workspaceDir, prompt, model)
 			},
 		},
 		{
@@ -137,7 +138,7 @@ Your task:
 						return fmt.Errorf("failed to build context for task %s: %w", taskID, err)
 					}
 					// Run task
-					if err := runner.RunTask(workspaceDir, slug, taskID, "opencode", ""); err != nil {
+					if err := runner.RunTask(workspaceDir, slug, taskID, "opencode", "", model); err != nil {
 						return fmt.Errorf("failed to execute implementation for task %s: %w", taskID, err)
 					}
 				}
@@ -181,7 +182,7 @@ Your task:
 3. For each review file under '.kv/workflows/%s/reviews/*.review.md', verify the checklist items. Mark them as [x] once they are satisfied.
 4. Fill in the review notes and decisions sections in the review file.
 5. If there are any failing criteria or tests, do NOT approve yet.`, slug, slug)
-				if err := runOpenCode(workspaceDir, prompt); err != nil {
+				if err := runOpenCode(workspaceDir, prompt, model); err != nil {
 					return err
 				}
 
@@ -233,7 +234,7 @@ Your task:
 3. Re-run tests to verify the fixes.
 4. Once verified, update the checklists in the review files to [x].
 5. Do NOT modify files outside allowed boundaries.`, slug, pendingTasks)
-				if err := runOpenCode(workspaceDir, prompt); err != nil {
+				if err := runOpenCode(workspaceDir, prompt, model); err != nil {
 					return err
 				}
 
@@ -255,15 +256,14 @@ Your task:
    - What challenges were faced and how they were solved.
    - Any patterns or decisions that should be added to the Knowledge Vault.
 3. If a Vault path is configured, promote/copy these markdown learnings to the vault under the appropriate category (e.g. 05-decisions or 07-runbooks).`, slug, slug)
-				return runOpenCode(workspaceDir, prompt)
+				return runOpenCode(workspaceDir, prompt, model)
 			},
 		},
 	}
 
-	for _, phase := range phases {
-		fmt.Printf("\n==================================================\n")
-		fmt.Printf("   %s\n", phase.Name)
-		fmt.Printf("==================================================\n")
+	for i, phase := range phases {
+		printWorkflowProgress(i)
+		fmt.Printf("\n>>> Starting %s...\n\n", phase.Name)
 
 		if err := phase.Action(); err != nil {
 			return fmt.Errorf("failure during %s: %w", phase.Name, err)
@@ -274,12 +274,60 @@ Your task:
 	return nil
 }
 
-func runOpenCode(workspaceDir, prompt string) error {
-	cmd := runCommandOverride("opencode", "run", prompt)
+func runOpenCode(workspaceDir, prompt, model string) error {
+	var args []string
+	args = append(args, "run")
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	args = append(args, prompt)
+
+	cmd := runCommandOverride("opencode", args...)
 	cmd.Dir = workspaceDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Env = os.Environ()
-	return cmd.Run()
+	return runner.RunCommandWithProgress(cmd)
+}
+
+func printWorkflowProgress(activePhase int) {
+	phases := []string{
+		"Idea (Concepção)",
+		"PRD (Product Requirements Document)",
+		"Specs (Technical Specification)",
+		"Implementation (Implementação)",
+		"Review (Revisão)",
+		"Adjustments (Ajustes)",
+		"Memorize (Memorizar)",
+	}
+
+	fmt.Println("\n\033[36m┌" + strings.Repeat("─", 60) + "┐\033[0m")
+	fmt.Println("\033[36m│                WORKFLOW EXECUTION PROGRESS                 │\033[0m")
+	fmt.Println("\033[36m├" + strings.Repeat("─", 60) + "┤\033[0m")
+	for i, name := range phases {
+		var statusText string
+		var statusColor string
+		if i < activePhase {
+			statusText = "[X] Done   "
+			statusColor = "\033[32m" // Green
+		} else if i == activePhase {
+			statusText = "[>] Running"
+			statusColor = "\033[35m" // Purple
+		} else {
+			statusText = "[ ] Pending"
+			statusColor = "\033[90m" // Gray
+		}
+
+		phaseText := fmt.Sprintf("Phase %d: %s", i+1, name)
+		
+		paddingLen := 46 - utf8.RuneCountInString(phaseText)
+		if paddingLen < 1 {
+			paddingLen = 1
+		}
+		padding := strings.Repeat(" ", paddingLen)
+
+		fmt.Printf("\033[36m│\033[0m  %s%s%s%s%s \033[36m│\033[0m\n", phaseText, padding, statusColor, statusText, "\033[0m")
+	}
+	fmt.Println("\033[36m└" + strings.Repeat("─", 60) + "┘\033[0m")
 }

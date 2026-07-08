@@ -28,7 +28,7 @@ type Form struct {
 	SubmitActive bool
 }
 
-func NewForm(cmd Command, workspaceApps []string, existingSessions []string) *Form {
+func NewForm(cmd Command, workspaceApps []string, existingSessions []string, workspaceWorkflows []string, workspaceTasks []string, opencodeModels []string) *Form {
 	var fields []FormField
 
 	for _, arg := range cmd.Args {
@@ -40,6 +40,12 @@ func NewForm(cmd Command, workspaceApps []string, existingSessions []string) *Fo
 			choices = workspaceApps
 		} else if arg.ChoicesSrc == "sessions" {
 			choices = existingSessions
+		} else if arg.ChoicesSrc == "workflows" {
+			choices = workspaceWorkflows
+		} else if arg.ChoicesSrc == "tasks" {
+			choices = workspaceTasks
+		} else if arg.ChoicesSrc == "models" {
+			choices = opencodeModels
 		} else {
 			choices = arg.Choices
 		}

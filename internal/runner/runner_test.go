@@ -44,13 +44,13 @@ func TestRunTask(t *testing.T) {
 	}
 
 	// Run with unsupported runner
-	err = RunTask(tmpDir, workflowSlug, taskID, "unsupported", "")
+	err = RunTask(tmpDir, workflowSlug, taskID, "unsupported", "", "")
 	if err == nil {
 		t.Errorf("expected error for unsupported runner, got nil")
 	}
 
 	// Run with opencode
-	err = RunTask(tmpDir, workflowSlug, taskID, "opencode", "")
+	err = RunTask(tmpDir, workflowSlug, taskID, "opencode", "", "")
 	if err != nil {
 		t.Fatalf("RunTask opencode failed: %v", err)
 	}

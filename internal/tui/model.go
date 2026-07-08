@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"kv/internal/opencode"
 	"kv/internal/vault"
 	"kv/internal/workspace"
 
@@ -50,6 +51,9 @@ type Model struct {
 	WorkspaceAppPaths map[string]string // Maps App ID -> App Path
 	ActiveVault     string
 	ExistingSessions []string // List of Session IDs
+	WorkspaceWorkflows []string
+	WorkspaceTasks     []string
+	OpencodeModels     []string
 
 	Width           int
 	Height          int
@@ -163,6 +167,83 @@ func (m *Model) reloadWorkspaceInfo() {
 				return sessList[i] > sessList[j]
 			})
 			m.ExistingSessions = sessList
+		}
+	}
+
+	m.WorkspaceWorkflows = nil
+	m.WorkspaceTasks = nil
+	m.OpencodeModels = nil
+
+	if m.WorkspaceDir != "" {
+		workflowsDir := filepath.Join(m.WorkspaceDir, ".kv", "workflows")
+		if infos, err := ioutil.ReadDir(workflowsDir); err == nil {
+			var wfList []string
+			var taskList []string
+			for _, info := range infos {
+				if info.IsDir() && !strings.HasPrefix(info.Name(), ".") {
+					wfSlug := info.Name()
+					wfList = append(wfList, wfSlug)
+
+					// Read tasks for this workflow
+					tasksDir := filepath.Join(workflowsDir, wfSlug, "tasks")
+					if taskInfos, err := ioutil.ReadDir(tasksDir); err == nil {
+						for _, tInfo := range taskInfos {
+							if !tInfo.IsDir() && filepath.Ext(tInfo.Name()) == ".md" {
+								tID := strings.TrimSuffix(tInfo.Name(), ".md")
+								taskList = append(taskList, tID)
+							}
+						}
+					}
+				}
+			}
+			sort.Strings(wfList)
+			sort.Strings(taskList)
+			m.WorkspaceWorkflows = wfList
+
+			// Deduplicate task list
+			var uniqueTasks []string
+			seenTasks := make(map[string]bool)
+			for _, t := range taskList {
+				if !seenTasks[t] {
+					seenTasks[t] = true
+					uniqueTasks = append(uniqueTasks, t)
+				}
+			}
+			m.WorkspaceTasks = uniqueTasks
+		}
+	}
+
+	// Load OpenCode models
+	if models, err := opencode.ListModels(); err == nil {
+		m.OpencodeModels = models
+	} else {
+		m.OpencodeModels = []string{
+			"opencode/big-pickle",
+			"opencode/deepseek-v4-flash-free",
+			"opencode/mimo-v2.5-free",
+			"opencode/nemotron-3-ultra-free",
+			"opencode/north-mini-code-free",
+			"opencode-go/deepseek-v4-flash",
+			"opencode-go/deepseek-v4-pro",
+			"opencode-go/glm-5.1",
+			"opencode-go/glm-5.2",
+			"opencode-go/kimi-k2.6",
+			"opencode-go/kimi-k2.7-code",
+			"opencode-go/mimo-v2.5",
+			"opencode-go/mimo-v2.5-pro",
+			"opencode-go/minimax-m2.7",
+			"opencode-go/minimax-m3",
+			"opencode-go/qwen3.6-plus",
+			"opencode-go/qwen3.7-max",
+			"opencode-go/qwen3.7-plus",
+			"openai/gpt-5.3-codex-spark",
+			"openai/gpt-5.4",
+			"openai/gpt-5.4-fast",
+			"openai/gpt-5.4-mini",
+			"openai/gpt-5.4-mini-fast",
+			"openai/gpt-5.5",
+			"openai/gpt-5.5-fast",
+			"openai/gpt-5.5-pro",
 		}
 	}
 }
@@ -431,7 +512,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := m.FilteredCmds[m.SelectedIndex]
 				if len(selected.Args) > 0 {
 					m.ActivePane = PaneContent
-					m.Form = NewForm(selected, m.WorkspaceApps, m.ExistingSessions)
+					m.Form = NewForm(selected, m.WorkspaceApps, m.ExistingSessions, m.WorkspaceWorkflows, m.WorkspaceTasks, m.OpencodeModels)
 					cfg := m.GetLayoutConfig()
 					m.Form.UpdateWidth(cfg.ContentInnerWidth)
 				} else {

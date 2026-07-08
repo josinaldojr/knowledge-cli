@@ -37,22 +37,26 @@ kv opencode doctor
 
 O `kv` não é apenas um compilador estático de contexto; ele atua como o harness de orquestração completo. Ao iniciar a execução de uma sessão ou tarefa, o adapter de runner do `kv` assume o controle e delega a execução ao agente do OpenCode de forma nativa.
 
-### 1. Execução de Sessão (`kv run --session <id>`)
+### 1. Execução de Sessão (`kv run --session <id> [--model <model>]`)
 Ao executar o comando de sessão:
 1. O `kv` valida as boundaries físicas no workspace.
 2. Carrega o prompt de instrução gerado em `.kv/sessions/<session-id>/opencode.md`.
-3. Invoca sob o capô o executável:
+3. Resolve o modelo do OpenCode:
+   - Se a flag `--model` for fornecida, ela será enviada ao OpenCode (`-m <model>`).
+   - Se for omitida e o terminal for interativo (TTY), o CLI exibirá um menu interativo para seleção de modelos.
+4. Invoca sob o capô o executável:
    ```bash
-   opencode run "<conteúdo do opencode.md>"
+   opencode run -m <model> "<conteúdo do opencode.md>"
    ```
-4. Compartilha os fluxos de entrada e saída padrão (`os.Stdin`, `os.Stdout` e `os.Stderr`) diretamente com a sua sessão de terminal atual. Isso garante que o agente do OpenCode consiga pedir permissões ao usuário de forma interativa, exibir o progresso do raciocínio e aceitar cancelamento direto.
-5. Após o término da execução do agente, o `kv` executa os testes de qualidade (Quality Gates), extrai o diff de alterações (Diff Summarizer) e consolida os resultados no relatório final em `report.md`.
+5. Compartilha os fluxos de entrada e saída padrão (`os.Stdin`, `os.Stdout` e `os.Stderr`) diretamente com a sua sessão de terminal atual. Isso garante que o agente do OpenCode consiga pedir permissões ao usuário de forma interativa, exibir o progresso do raciocínio e aceitar cancelamento direto.
+6. Após o término da execução do agente, o `kv` executa os testes de qualidade (Quality Gates), extrai o diff de alterações (Diff Summarizer) e consolida os resultados no relatório final em `report.md`.
 
-### 2. Execução de Task (`kv task run <workflow> <task-id>`)
+### 2. Execução de Task (`kv task run <workflow> <task-id> [--model <model>]`)
 Para fluxos de trabalho tradicionais baseados em tarefas (legado):
 1. O `kv` compila o pacote de contexto da tarefa e salva em `.opencode/context.md`.
-2. Executa a ferramenta sob o capô:
+2. Se a flag `--model` for omitida e o terminal for interativo (TTY), o CLI exibirá um menu interativo para você selecionar o modelo a ser executado.
+3. Executa a ferramenta sob o capô:
    ```bash
-   opencode run "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
+   opencode run -m <model> "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
    ```
-3. O agente consome o arquivo de contexto unificado na raiz do repositório para planejar e aplicar as alterações necessárias.
+4. O agente consome o arquivo de contexto unificado na raiz do repositório para planejar e aplicar as alterações necessárias.

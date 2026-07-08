@@ -101,7 +101,9 @@ Analisa a integridade da configuração da sessão e garante que:
 #### 4. Execução Controlada (`kv run`)
 Executa o fluxo da sessão utilizando o runner selecionado.
 - Com a flag `--dry-run`, exibe um resumo detalhado contendo tamanho estimado do contexto, boundaries de leitura/escrita configuradas, comandos de qualidade e status geral de validação sem executar o agente.
-- Em execução normal com o runner **OpenCode** (padrão), o `kv` realiza a validação de boundaries físicas, lê o conteúdo do prompt gerado em `.kv/sessions/<session-id>/opencode.md`, e **executa o comando `opencode run "<prompt>"`** herdando o terminal interativo (`Stdin`, `Stdout` e `Stderr` compartilhados). Após a execução do agente, o `kv` roda os Quality Gates, o Diff Summarizer, audita os logs no arquivo append-only (`audit.jsonl`) e gera o relatório final.
+- Em execução normal com o runner **OpenCode** (padrão), o `kv` realiza a validação de boundaries físicas, lê o conteúdo do prompt gerado em `.kv/sessions/<session-id>/opencode.md`, e **executa o comando `opencode run "<prompt>"`** herdando o terminal interativo.
+- **Seleção de Modelo**: Você pode especificar qual modelo deve ser executado no OpenCode usando a flag `--model <model>`. Se a flag for omitida e o terminal for interativo (TTY), o CLI exibirá um menu de seleção interativo para você escolher qual modelo do OpenCode deseja usar antes do início da execução.
+- Após a execução do agente, o `kv` roda os Quality Gates, o Diff Summarizer, audita os logs no arquivo append-only (`audit.jsonl`) e gera o relatório final.
 
 #### 5. Quality Gates (`kv quality run`)
 Executa os comandos de qualidade (testes unitários, linters) do contrato da sessão a partir dos diretórios de suas respectivas aplicações, validando a segurança com o Policy Engine antes da execução e registrando o resultado no log de auditoria.
@@ -142,8 +144,37 @@ kv context build feature-auth 002-add-login
 ### 4. Executar a Task
 Executa a task no runner selecionado. Quando integrado com o **OpenCode**, o `kv` executa `opencode run` instruindo o agente a ler o contexto gerado em `.opencode/context.md` e realizar as mudanças necessárias:
 ```bash
-kv task run feature-auth 002-add-login --runner opencode
+kv task run feature-auth 002-add-login --runner opencode [--model <model>]
 ```
+- **Seleção Interativa**: Se você omitir o slug do workflow ou o ID da task (ex: apenas `kv task run` ou `kv task enrich`), e estiver em um terminal interativo (TTY), o CLI exibirá um menu interativo para você selecionar o workflow e a task criada correspondente, além do modelo a ser executado.
+
+### 5. Executar o Workflow Completo (7 Fases)
+Para rodar de ponta a ponta o fluxo de trabalho de 7 fases automatizado:
+```bash
+kv workflow run feature-auth --prompt "Refatorar autenticação usando tokens JWT" [--model <model>]
+```
+
+O executor de workflows orquestrará as seguintes fases sequencialmente utilizando o runner selecionado (ex: **OpenCode**):
+1. **Idea (Concepção)**: Cria a ideia básica em `idea.md`.
+2. **PRD (Product Requirements Document)**: Define requisitos e escopo em `prd.md`.
+3. **Specs (Technical Specification)**: Detalha a arquitetura técnica em `techspec.md` e gera as tarefas a serem executadas em `tasks/`.
+4. **Implementation (Implementação)**: Executa as tarefas sequencialmente (processando cada uma com enriquecimento de contexto e execução).
+5. **Review (Revisão)**: Cria templates de revisão e valida se os critérios de aceitação foram cumpridos em `reviews/`.
+6. **Adjustments (Ajustes)**: Ajusta o código caso alguma tarefa tenha falhado no review.
+7. **Memorize (Memorizar)**: Compila as memórias e aprendizados em `memory/` e promove os resultados para o Vault.
+
+#### Painel de Progresso no Terminal
+Ao iniciar o workflow e a cada transição de fase, o CLI renderiza um painel dinâmico no terminal exibindo o status de todas as etapas:
+- `[X] Done` (em verde) para fases concluídas.
+- `[>] Running` (em roxo) para a fase ativa.
+- `[ ] Pending` (em cinza) para fases futuras.
+
+#### Heartbeat de Execução
+Para processos de longa duração no runner, o `kv` exibe um heartbeat de progresso no terminal a cada 5 segundos:
+```text
+⏳ [OpenCode] Running agents in parallel... (5s elapsed)
+```
+Isso fornece feedback visual contínuo e evita timeouts durante execuções pesadas.
 
 ---
 
@@ -181,6 +212,15 @@ Sobe uma interface Web premium local-first com tema dark e glassmorphism. Permit
 # Inicia a interface interativa (padrão: porta 8080)
 kv wiki serve --port 8080
 ```
+
+## Comparativo: Sessões vs. Workflows
+
+O `kv` oferece duas maneiras complementares para organizar a execução e os testes assistidos por IA:
+
+* **Sessões (Sessions)**: Foco operacional direto com delimitação física rígida (`boundary`) de arquivos. Os testes são executados sob demanda através de **Quality Gates** (`kv quality run`) configurados no contrato de sessão. Recomendado para correções de bugs, pequenas refatorações ou desenvolvimento ágil.
+* **Workflows & Tasks**: Foco em processo, governança persistente no Git e ciclo estruturado de 7 fases (*Idea*, *PRD*, *Specs*, *Implementation*, *Review*, *Adjustments*, *Memorize*). Os testes e validações de critérios de aceitação ocorrem nativamente nas fases de *Review* e *Adjustments*. Recomendado para novas features complexas ou arquiteturas que exijam documentação técnica e auditoria de código.
+
+*(Para um detalhamento aprofundado, acesse o capítulo 15 da Wiki Web local rodando `kv wiki serve`)*.
 
 ---
 

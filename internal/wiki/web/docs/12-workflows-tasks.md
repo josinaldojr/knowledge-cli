@@ -122,14 +122,51 @@ Esse comando pega o Context Pack gerado na pasta do workflow e cria o arquivo co
 Para disparar o agente de IA e resolver a tarefa com o runner especificado:
 
 ```bash
-kv task run <workflow-slug> <task-id> [--runner <runner>]
+kv task run <workflow-slug> <task-id> [--runner <runner>] [--model <model>]
 ```
+
+- **Seleção Interativa**: Caso os argumentos `<workflow-slug>` ou `<task-id>` sejam omitidos, e o terminal seja interativo (TTY), o CLI exibirá um menu interativo para seleção dos workflows e tasks criadas no projeto.
+- **Seleção do Modelo**: Se a flag `--model` for omitida, você poderá selecionar interativamente qual modelo do OpenCode deseja executar.
 
 ### Fluxo de Execução:
 1. Executa automaticamente o `kv context build` sob o capô para garantir que a última versão do contexto esteja em `.opencode/context.md`.
 2. Valida a saúde do executável do runner (ex: validação com o comando local `opencode doctor`).
-3. Invoca o comando do runner:
+3. Invoca o comando do runner passando o modelo selecionado:
    ```bash
-   opencode run "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
+   opencode run -m <model> "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
    ```
 4. O terminal interativo é compartilhado diretamente com o processo em execução para que o agente e você possam interagir durante o desenvolvimento.
+
+---
+
+## 🌊 6. Executando o Workflow Completo (7 Fases)
+
+Para orquestrar o fluxo completo de 7 etapas de forma linear e automatizada em um único comando:
+
+```bash
+kv workflow run <slug> --prompt <prompt> [--model <model>]
+```
+
+### Sequência das 7 Fases:
+1. **Idea (Concepção)**: Explora o código e cria uma visão geral do projeto em `idea.md`.
+2. **PRD (Product Requirements Document)**: Mapeia os requisitos do produto em `prd.md`.
+3. **Specs (Technical Specification)**: Elabora a especificação de engenharia em `techspec.md` e gera os arquivos de tasks em `tasks/`.
+4. **Implementation (Implementação)**: Processa automaticamente cada uma das tarefas geradas através de `kv task enrich`, `kv context build` e execução pelo runner.
+5. **Review (Revisão)**: Cria templates de verificação e avalia se os critérios de aceitação foram cumpridos na pasta `reviews/`.
+6. **Adjustments (Ajustes)**: Corrige os bugs ou falhas identificadas no review das tarefas pendentes.
+7. **Memorize (Memorizar)**: Consolida as memórias na pasta `memory/` e as envia para o Knowledge Vault configurado.
+
+### Recursos de Status em Tempo Real:
+
+#### Painel de Progresso Visual
+Durante o ciclo de execução, o `kv` exibe no terminal um painel colorido mostrando o progresso atual das fases do workflow:
+- `[X] Done` (Verde) para etapas já completadas.
+- `[>] Running` (Roxo) para a etapa atual de execução.
+- `[ ] Pending` (Cinza) para as etapas seguintes.
+
+#### Heartbeat de Execução
+Para evitar que processos longos de execução de agentes deem timeout ou pareçam travados, o runner implementa um heartbeat de progresso no console que emite atualizações a cada 5 segundos:
+```text
+⏳ [OpenCode] Running agents in parallel... (5s elapsed)
+```
+

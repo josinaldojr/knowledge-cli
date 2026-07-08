@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"strings"
 
@@ -37,6 +38,7 @@ type AgentRunner interface {
 // OpenCodeRunner is the implementation of AgentRunner for OpenCode.
 type OpenCodeRunner struct {
 	WorkspaceDir string
+	Model        string
 }
 
 // Run executes the OpenCode agent flow.
@@ -140,6 +142,9 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 	if agentName != "" {
 		args = append(args, "--agent", agentName)
 	}
+	if r.Model != "" {
+		args = append(args, "-m", r.Model)
+	}
 	args = append(args, promptContent)
 
 	cmd := RunCommandOverride("opencode", args...)
@@ -149,7 +154,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 	cmd.Stdin = os.Stdin
 	cmd.Env = os.Environ()
 
-	err = cmd.Run()
+	err = RunCommandWithProgress(cmd)
 	if err != nil {
 		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
 			"status": "failed",
@@ -191,7 +196,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 }
 
 // RunSession executes the session flow.
-func RunSession(workspaceDir, sessionID, agentName string, dryRun bool) error {
+func RunSession(workspaceDir, sessionID, agentName string, dryRun bool, model string) error {
 	// 1. Load session
 	sess, err := session.LoadSession(workspaceDir, sessionID)
 	if err != nil {
@@ -219,7 +224,7 @@ func RunSession(workspaceDir, sessionID, agentName string, dryRun bool) error {
 	// 4. Resolve runner and execute
 	var agentRunner AgentRunner
 	if sess.Agent.Provider == "opencode" || sess.Agent.Provider == "" {
-		agentRunner = &OpenCodeRunner{WorkspaceDir: workspaceDir}
+		agentRunner = &OpenCodeRunner{WorkspaceDir: workspaceDir, Model: model}
 	} else {
 		return fmt.Errorf("unsupported agent provider: '%s'", sess.Agent.Provider)
 	}
@@ -241,7 +246,7 @@ func RunSession(workspaceDir, sessionID, agentName string, dryRun bool) error {
 }
 
 // RunTask executes a task using the specified runner. (Legacy compatible helper)
-func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string) error {
+func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string, model string) error {
 	// 1. Build the context first to ensure .opencode/context.md is generated
 	fmt.Printf("Building context for task %s in workflow %s...\n", taskID, workflowSlug)
 	if err := context.BuildContext(workspaceDir, workflowSlug, taskID); err != nil {
@@ -311,6 +316,9 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string) e
 		if agentName != "" {
 			args = append(args, "--agent", agentName)
 		}
+		if model != "" {
+			args = append(args, "-m", model)
+		}
 		args = append(args, promptContent)
 
 		cmd := RunCommandOverride("opencode", args...)
@@ -320,7 +328,7 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string) e
 		cmd.Stdin = os.Stdin
 		cmd.Env = os.Environ()
 
-		if err := cmd.Run(); err != nil {
+		if err := RunCommandWithProgress(cmd); err != nil {
 			return fmt.Errorf("opencode execution failed: %w", err)
 		}
 
@@ -330,4 +338,28 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string) e
 	default:
 		return fmt.Errorf("unsupported runner type: '%s'. Supported runners: opencode", runnerType)
 	}
+}
+
+// RunCommandWithProgress executes a command and prints a periodic progress heartbeat.
+func RunCommandWithProgress(cmd *exec.Cmd) error {
+	done := make(chan struct{})
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	go func() {
+		start := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				elapsed := time.Since(start).Round(time.Second)
+				fmt.Printf(" ⏳ [OpenCode] Running agents in parallel... (%s elapsed)\n", elapsed)
+			}
+		}
+	}()
+
+	err := cmd.Run()
+	close(done)
+	return err
 }

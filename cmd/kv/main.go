@@ -24,6 +24,8 @@ import (
 	"kv/internal/workflow"
 	"kv/internal/workspace"
 	"kv/internal/tui"
+
+	"github.com/mattn/go-isatty"
 )
 
 func main() {
@@ -199,19 +201,50 @@ func main() {
 				}
 			} else {
 				args := fs.Args()
-				if len(args) < 2 {
-					fmt.Fprintln(os.Stderr, "Error: Missing arguments.")
-					printContextUsage()
-					os.Exit(1)
+				var slug, taskID string
+				if len(args) >= 1 {
+					slug = args[0]
 				}
-				slug := args[0]
-				taskID := args[1]
+				if len(args) >= 2 {
+					taskID = args[1]
+				}
 
 				wsDir, err := workspace.FindWorkspaceDir(cwd)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
+
+				if slug == "" {
+					if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+						selectedSlug, err := tui.PromptWorkflow(wsDir)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+							os.Exit(1)
+						}
+						slug = selectedSlug
+					} else {
+						fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
+						printContextUsage()
+						os.Exit(1)
+					}
+				}
+
+				if taskID == "" {
+					if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+						selectedTask, err := tui.PromptTask(wsDir, slug)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+							os.Exit(1)
+						}
+						taskID = selectedTask
+					} else {
+						fmt.Fprintln(os.Stderr, "Error: Missing task ID.")
+						printContextUsage()
+						os.Exit(1)
+					}
+				}
+
 				err = context.BuildContext(wsDir, slug, taskID)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1109,23 +1142,21 @@ func main() {
 			fmt.Printf("Workflow '%s' created successfully under %s/.kv/workflows/%s\n", slug, wsDir, slug)
 
 		case "run":
-			if len(os.Args) < 4 {
-				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
-				fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt>")
-				os.Exit(1)
+			var slug string
+			var restArgs []string
+
+			if len(os.Args) >= 4 && !strings.HasPrefix(os.Args[3], "-") {
+				slug = os.Args[3]
+				restArgs = os.Args[4:]
+			} else {
+				restArgs = os.Args[3:]
 			}
-			slug := os.Args[3]
 
 			fs := flag.NewFlagSet("workflow run", flag.ContinueOnError)
 			promptPtr := fs.String("prompt", "", "The goal or prompt to execute in this workflow")
-			err := fs.Parse(os.Args[4:])
+			modelPtr := fs.String("model", "", "Model to execute (e.g. opencode/deepseek-v4-flash-free)")
+			err := fs.Parse(restArgs)
 			if err != nil {
-				os.Exit(1)
-			}
-
-			if *promptPtr == "" {
-				fmt.Fprintln(os.Stderr, "Error: Missing required --prompt flag.")
-				fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt>")
 				os.Exit(1)
 			}
 
@@ -1140,7 +1171,37 @@ func main() {
 				os.Exit(1)
 			}
 
-			err = workflow.RunWorkflow(wsDir, slug, *promptPtr)
+			if slug == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedSlug, err := tui.PromptWorkflow(wsDir)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					slug = selectedSlug
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
+					fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt> [--model <model>]")
+					os.Exit(1)
+				}
+			}
+
+			if *promptPtr == "" {
+				fmt.Fprintln(os.Stderr, "Error: Missing required --prompt flag.")
+				fmt.Fprintln(os.Stderr, "Usage: kv workflow run <slug> --prompt <prompt> [--model <model>]")
+				os.Exit(1)
+			}
+
+			if *modelPtr == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedModel, err := tui.PromptModel()
+					if err == nil && selectedModel != "" {
+						*modelPtr = selectedModel
+					}
+				}
+			}
+
+			err = workflow.RunWorkflow(wsDir, slug, *promptPtr, *modelPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -1160,13 +1221,16 @@ func main() {
 		subCommand := os.Args[2]
 		switch subCommand {
 		case "enrich":
-			if len(os.Args) < 5 {
-				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
-				fmt.Fprintln(os.Stderr, "Usage: kv task enrich <workflow-slug> <task-id>")
-				os.Exit(1)
+			var slug string
+			var taskID string
+
+			if len(os.Args) >= 4 && !strings.HasPrefix(os.Args[3], "-") {
+				slug = os.Args[3]
 			}
-			slug := os.Args[3]
-			taskID := os.Args[4]
+			if len(os.Args) >= 5 && !strings.HasPrefix(os.Args[4], "-") {
+				taskID = os.Args[4]
+			}
+
 			cwd, err := os.Getwd()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1177,6 +1241,37 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
+
+			if slug == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedSlug, err := tui.PromptWorkflow(wsDir)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					slug = selectedSlug
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
+					fmt.Fprintln(os.Stderr, "Usage: kv task enrich <workflow-slug> <task-id>")
+					os.Exit(1)
+				}
+			}
+
+			if taskID == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedTask, err := tui.PromptTask(wsDir, slug)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					taskID = selectedTask
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Missing task ID.")
+					fmt.Fprintln(os.Stderr, "Usage: kv task enrich <workflow-slug> <task-id>")
+					os.Exit(1)
+				}
+			}
+
 			err = task.EnrichTask(wsDir, slug, taskID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1185,18 +1280,34 @@ func main() {
 			fmt.Printf("Task '%s' enriched successfully. Context pack generated.\n", taskID)
 
 		case "run":
-			if len(os.Args) < 5 {
-				fmt.Fprintln(os.Stderr, "Error: Missing workflow slug or task ID.")
-				fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>] [--agent <agent>]")
-				os.Exit(1)
+			var slug string
+			var taskID string
+			var restArgs []string
+
+			argsIdx := 3
+			var nonFlagArgs []string
+			for argsIdx < len(os.Args) {
+				arg := os.Args[argsIdx]
+				if strings.HasPrefix(arg, "-") {
+					break
+				}
+				nonFlagArgs = append(nonFlagArgs, arg)
+				argsIdx++
 			}
-			slug := os.Args[3]
-			taskID := os.Args[4]
+			restArgs = os.Args[argsIdx:]
+
+			if len(nonFlagArgs) >= 1 {
+				slug = nonFlagArgs[0]
+			}
+			if len(nonFlagArgs) >= 2 {
+				taskID = nonFlagArgs[1]
+			}
 
 			fs := flag.NewFlagSet("task run", flag.ContinueOnError)
 			runnerPtr := fs.String("runner", "opencode", "Runner type (e.g. opencode)")
 			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
-			err := fs.Parse(os.Args[5:])
+			modelPtr := fs.String("model", "", "Model to execute (e.g. opencode/deepseek-v4-flash-free)")
+			err := fs.Parse(restArgs)
 			if err != nil {
 				os.Exit(1)
 			}
@@ -1212,7 +1323,46 @@ func main() {
 				os.Exit(1)
 			}
 
-			err = runner.RunTask(wsDir, slug, taskID, *runnerPtr, *agentPtr)
+			if slug == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedSlug, err := tui.PromptWorkflow(wsDir)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					slug = selectedSlug
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Missing workflow slug.")
+					fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>] [--agent <agent>] [--model <model>]")
+					os.Exit(1)
+				}
+			}
+
+			if taskID == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedTask, err := tui.PromptTask(wsDir, slug)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(1)
+					}
+					taskID = selectedTask
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Missing task ID.")
+					fmt.Fprintln(os.Stderr, "Usage: kv task run <workflow-slug> <task-id> [--runner <runner>] [--agent <agent>] [--model <model>]")
+					os.Exit(1)
+				}
+			}
+
+			if *runnerPtr == "opencode" && *modelPtr == "" {
+				if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+					selectedModel, err := tui.PromptModel()
+					if err == nil && selectedModel != "" {
+						*modelPtr = selectedModel
+					}
+				}
+			}
+
+			err = runner.RunTask(wsDir, slug, taskID, *runnerPtr, *agentPtr, *modelPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -1257,6 +1407,7 @@ func main() {
 		sessionPtr := fs.String("session", "", "Session ID to run")
 		dryRunPtr := fs.Bool("dry-run", false, "Simulate execution without running the agent")
 		agentPtr := fs.String("agent", "", "Agent name to override session agent config")
+		modelPtr := fs.String("model", "", "Model to execute (e.g. opencode/deepseek-v4-flash-free)")
 		err := fs.Parse(os.Args[2:])
 		if err != nil {
 			os.Exit(1)
@@ -1279,7 +1430,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		err = runner.RunSession(wsDir, *sessionPtr, *agentPtr, *dryRunPtr)
+		if *modelPtr == "" && !*dryRunPtr {
+			if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+				selectedModel, err := tui.PromptModel()
+				if err == nil && selectedModel != "" {
+					*modelPtr = selectedModel
+				}
+			}
+		}
+
+		err = runner.RunSession(wsDir, *sessionPtr, *agentPtr, *dryRunPtr, *modelPtr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running session: %v\n", err)
 			os.Exit(1)

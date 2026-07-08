@@ -120,7 +120,7 @@ Implement the feature logic.
 	runner.RunCommandOverride = mockCommander
 
 	// Execute RunWorkflow
-	err = RunWorkflow(tmpDir, slug, "implement payment logic")
+	err = RunWorkflow(tmpDir, slug, "implement payment logic", "")
 	if err != nil {
 		t.Fatalf("RunWorkflow failed: %v", err)
 	}

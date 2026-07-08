@@ -56,8 +56,9 @@ Quando o foco está na barra lateral esquerda (indicado pelo indicador `▶` nos
 
 ### 2. Preenchendo o Formulário de Parâmetros
 Quando o foco está no painel de formulário à direita (inserindo flags e argumentos):
-- **`TAB` / `Shift + TAB`**: Avança ou retrocede entre os campos do formulário (inputs de texto, booleans, etc.).
-- **Setas `←` / `→` ou `Espaço`**: Altera opções em seletores dinâmicos ou campos booleanos.
+- **`TAB` / `Shift + TAB`**: Avança ou retrocede entre os campos do formulário (inputs de texto, booleans, dropdowns, etc.).
+- **Setas `↑` / `↓` ou `j` / `k`**: Navega entre as opções disponíveis em campos de seleção dinâmica (dropdowns), como escolher workflows criados, tasks criadas ou modelos do OpenCode.
+- **Setas `←` / `→` ou `Espaço`**: Altera opções em campos booleanos ou confirma seleções em listas multiselect.
 - **`ESC`**: Cancela o formulário e retorna o foco para a Sidebar de comandos.
 - **`ENTER`**: Confirma as entradas do formulário e inicia a execução do comando.
 
