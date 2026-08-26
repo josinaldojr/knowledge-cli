@@ -1,6 +1,9 @@
 package main
 
 import (
+	stdcontext "context"
+	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -8,22 +11,34 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	claudecodeadapter "kv/internal/adapter/claudecode"
+	codexadapter "kv/internal/adapter/codex"
 	"kv/internal/boundary"
 	"kv/internal/context"
 	"kv/internal/diff"
+	"kv/internal/discovery"
 	"kv/internal/fsutil"
+	"kv/internal/lifecycle"
+	"kv/internal/mcp"
+	"kv/internal/memory"
 	"kv/internal/opencode"
+	"kv/internal/portable"
 	"kv/internal/quality"
+	"kv/internal/query"
 	"kv/internal/report"
 	"kv/internal/runner"
 	"kv/internal/session"
+	"kv/internal/snapshot"
+	"kv/internal/spool"
+	"kv/internal/store"
 	"kv/internal/task"
+	"kv/internal/tui"
 	"kv/internal/vault"
 	"kv/internal/wiki"
 	"kv/internal/workflow"
 	"kv/internal/workspace"
-	"kv/internal/tui"
 
 	"github.com/mattn/go-isatty"
 )
@@ -41,6 +56,18 @@ func main() {
 	command := os.Args[1]
 
 	switch command {
+	case "mcp":
+		if len(os.Args) > 2 {
+			if err := runMCPAdmin(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if err := mcp.ServeStdio(); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
 		printGeneralUsage()
 		os.Exit(0)
@@ -426,6 +453,11 @@ func main() {
 		}
 		subCommand := os.Args[2]
 		switch subCommand {
+		case "status":
+			if err := printGlobalWorkspaceStatus(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		case "init":
 			fs := flag.NewFlagSet("workspace init", flag.ContinueOnError)
 			vaultPathPtr := fs.String("vault", "", "Path to the Knowledge Vault")
@@ -747,6 +779,11 @@ func main() {
 		}
 		subCommand := os.Args[2]
 		switch subCommand {
+		case "list":
+			if err := printGlobalSessions(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		case "init":
 			fs := flag.NewFlagSet("session init", flag.ContinueOnError)
 			idPtr := fs.String("id", "", "Session ID")
@@ -1387,6 +1424,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
+		case "uninstall":
+			if err := opencode.Uninstall(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		case "doctor":
 			healthy, err := opencode.Doctor()
 			if err != nil {
@@ -1399,6 +1441,42 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "Error: Unknown opencode subcommand '%s'\n", subCommand)
 			printOpenCodeUsage()
+			os.Exit(1)
+		}
+
+	case "change":
+		if len(os.Args) != 3 || os.Args[2] != "history" {
+			fmt.Fprintln(os.Stderr, "Usage: kv change history")
+			os.Exit(1)
+		}
+		if err := printChangeHistory(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "memory":
+		if len(os.Args) < 4 || os.Args[2] != "search" {
+			fmt.Fprintln(os.Stderr, "Usage: kv memory search [--change <change-key>] <query>")
+			os.Exit(1)
+		}
+		if err := printMemorySearch(os.Args[3:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "data":
+		if err := runDataExchange(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "events":
+		if len(os.Args) != 3 || os.Args[2] != "retry" {
+			fmt.Fprintln(os.Stderr, "Usage: kv events retry")
+			os.Exit(1)
+		}
+		if err := retryPendingEvents(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -1651,6 +1729,325 @@ func main() {
 	}
 }
 
+func withGlobalStore(fn func(store.Paths, *store.Repository) error) error {
+	paths, err := store.ResolvePaths()
+	if err != nil {
+		return err
+	}
+	database, err := store.Open(stdcontext.Background(), paths.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := database.Migrate(stdcontext.Background(), paths.DatabasePath); err != nil {
+		return err
+	}
+	return fn(paths, store.NewRepository(database))
+}
+
+func currentWorkspaceID(ctx stdcontext.Context, repository *store.Repository) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	identity, err := discovery.DeriveIdentity(cwd)
+	if err != nil {
+		return "", err
+	}
+	workspaceID, err := repository.WorkspaceID(ctx, identity.LogicalID)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("no global KV workspace record for this directory")
+	}
+	return workspaceID, err
+}
+
+func runMCPAdmin(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: kv mcp <status|retry|reconcile|doctor>")
+	}
+	switch args[0] {
+	case "status":
+		return printMCPStatus()
+	case "retry":
+		return retryPendingEvents()
+	case "reconcile":
+		fs := flag.NewFlagSet("mcp reconcile", flag.ContinueOnError)
+		timeout := fs.Duration("timeout", 24*time.Hour, "Mark inactive sessions and pending operations stale after this duration")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return reconcileStale(*timeout)
+	case "doctor":
+		fs := flag.NewFlagSet("mcp doctor", flag.ContinueOnError)
+		provider := fs.String("provider", "all", "Provider to inspect: opencode, claude-code, codex, or all")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return printProviderDoctor(*provider)
+	default:
+		return fmt.Errorf("unknown mcp subcommand %q", args[0])
+	}
+}
+
+func printMCPStatus() error {
+	return withGlobalStore(func(paths store.Paths, _ *store.Repository) error {
+		queue, err := spool.Open(paths.SpoolDir)
+		if err != nil {
+			return err
+		}
+		entries, err := queue.Entries()
+		if err != nil {
+			return err
+		}
+		fmt.Println("MCP status: ready")
+		fmt.Printf("Global data: %s\n", paths.DataDir)
+		fmt.Printf("Database: %s\n", paths.DatabasePath)
+		fmt.Printf("Pending events: %d\n", len(entries))
+		return nil
+	})
+}
+
+func printGlobalWorkspaceStatus() error {
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		workspaceID, err := currentWorkspaceID(stdcontext.Background(), repository)
+		if err != nil {
+			return err
+		}
+		status, err := repository.GetWorkspaceStatus(stdcontext.Background(), workspaceID)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Workspace: %s\n", status.Identity)
+		fmt.Printf("Workspace ID: %s\n", status.ID)
+		fmt.Printf("Active sessions: %d\n", status.ActiveSessions)
+		fmt.Printf("OpenSpec changes: %d\n", status.Changes)
+		return nil
+	})
+}
+
+func printGlobalSessions() error {
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		workspaceID, err := currentWorkspaceID(stdcontext.Background(), repository)
+		if err != nil {
+			return err
+		}
+		sessions, err := repository.CurrentSessions(stdcontext.Background(), workspaceID)
+		if err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			fmt.Println("No global provider sessions.")
+			return nil
+		}
+		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(writer, "ID\tPROVIDER\tSTATUS\tLAST SEEN")
+		for _, session := range sessions {
+			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", session.ID, session.Provider, session.Status, session.LastSeenAt.Format(time.RFC3339))
+		}
+		return writer.Flush()
+	})
+}
+
+func printChangeHistory() error {
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		workspaceID, err := currentWorkspaceID(stdcontext.Background(), repository)
+		if err != nil {
+			return err
+		}
+		changes, err := repository.ChangeHistory(stdcontext.Background(), workspaceID)
+		if err != nil {
+			return err
+		}
+		if len(changes) == 0 {
+			fmt.Println("No OpenSpec change history.")
+			return nil
+		}
+		for _, change := range changes {
+			fmt.Printf("%s\t%s\n", change.Key, change.Status)
+		}
+		return nil
+	})
+}
+
+func printMemorySearch(args []string) error {
+	fs := flag.NewFlagSet("memory search", flag.ContinueOnError)
+	change := fs.String("change", "", "Limit results to an OpenSpec change key")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	text := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if text == "" {
+		return fmt.Errorf("memory search query is required")
+	}
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		workspaceID, err := currentWorkspaceID(stdcontext.Background(), repository)
+		if err != nil {
+			return err
+		}
+		results, err := query.New(memory.NewRetriever(repository), repository).Memories(stdcontext.Background(), memory.Query{WorkspaceID: workspaceID, ChangeKey: *change, Text: text, Limit: 20})
+		if err != nil {
+			return err
+		}
+		if len(results) == 0 {
+			fmt.Println("No matching engineering memory.")
+			return nil
+		}
+		for _, result := range results {
+			fmt.Printf("[%s] %s\n  Change: %s\n  Source: %s @ %s\n", result.Kind, result.Summary, result.ChangeKey, result.ArtifactPath, result.RevisionID)
+		}
+		return nil
+	})
+}
+
+func runDataExchange(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: kv data <export|import>")
+	}
+	fs := flag.NewFlagSet("data "+args[0], flag.ContinueOnError)
+	file := fs.String("file", "", "Path to a KV knowledge JSON document")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *file == "" || len(fs.Args()) != 0 {
+		return fmt.Errorf("--file is required")
+	}
+	switch args[0] {
+	case "export":
+		return exportKnowledge(*file)
+	case "import":
+		return importKnowledge(*file)
+	default:
+		return fmt.Errorf("unknown data subcommand %q", args[0])
+	}
+}
+
+func exportKnowledge(path string) error {
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		workspaceID, err := currentWorkspaceID(stdcontext.Background(), repository)
+		if err != nil {
+			return err
+		}
+		document, err := repository.ExportKnowledge(stdcontext.Background(), workspaceID)
+		if err != nil {
+			return err
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return fmt.Errorf("create export file: %w", err)
+		}
+		defer file.Close()
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(document); err != nil {
+			return fmt.Errorf("write export: %w", err)
+		}
+		fmt.Printf("Exported global KV knowledge to %s (%d sessions, %d memories)\n", path, len(document.Sessions), len(document.Memories))
+		return nil
+	})
+}
+
+func importKnowledge(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open import file: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	var document portable.Document
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode import: %w", err)
+	}
+	if err := document.Validate(); err != nil {
+		return fmt.Errorf("invalid import: %w", err)
+	}
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		if err := repository.ImportKnowledge(stdcontext.Background(), document); err != nil {
+			return fmt.Errorf("import knowledge: %w", err)
+		}
+		fmt.Printf("Imported global KV knowledge for %s (%d sessions, %d memories)\n", document.Workspace.Identity, len(document.Sessions), len(document.Memories))
+		return nil
+	})
+}
+
+func retryPendingEvents() error {
+	return withGlobalStore(func(paths store.Paths, repository *store.Repository) error {
+		queue, err := spool.Open(paths.SpoolDir)
+		if err != nil {
+			return err
+		}
+		entries, err := queue.Due(time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		snapshots, err := snapshot.Open(paths.SnapshotDir, 1<<20, nil)
+		if err != nil {
+			return err
+		}
+		hooks := lifecycle.NewHookApplicationService(lifecycle.NewSessionService(repository), repository, snapshot.NewCapturer(snapshots, repository)).WithMemoryRetriever(memory.NewRetriever(repository)).WithArchiveConsolidator(memory.NewConsolidator(repository))
+		var delivered, deferred int
+		for _, entry := range entries {
+			if _, err := hooks.Handle(stdcontext.Background(), entry.Envelope); err != nil {
+				if err := queue.Retry(entry, time.Now().UTC()); err != nil {
+					return err
+				}
+				deferred++
+				continue
+			}
+			if err := queue.Acknowledge(entry.Envelope.EventID); err != nil {
+				return err
+			}
+			delivered++
+		}
+		fmt.Printf("Retried pending events: delivered=%d deferred=%d\n", delivered, deferred)
+		return nil
+	})
+}
+
+func reconcileStale(timeout time.Duration) error {
+	return withGlobalStore(func(_ store.Paths, repository *store.Repository) error {
+		sessions, operations, err := lifecycle.NewSessionService(repository).Reconcile(stdcontext.Background(), timeout, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Reconciled stale state: sessions=%d operations=%d\n", sessions, operations)
+		return nil
+	})
+}
+
+func printProviderDoctor(provider string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	providers := []string{provider}
+	if provider == "all" {
+		providers = []string{"opencode", "claude-code", "codex"}
+	}
+	for _, name := range providers {
+		var binary, configured, lifecycleAdapter, spoolRecovery bool
+		switch name {
+		case "opencode":
+			report := opencode.CheckMCP(filepath.Join(home, ".config", "opencode"), "kv")
+			binary, configured, lifecycleAdapter, spoolRecovery = report.Binary, report.MCPConfigured, report.LifecycleAdapter, report.SpoolRecovery
+		case "claude-code":
+			report := claudecodeadapter.CheckMCP(filepath.Join(home, ".claude", "settings.json"), "claude")
+			binary, configured, lifecycleAdapter, spoolRecovery = report.Binary, report.MCPConfigured, report.LifecycleAdapter, report.SpoolRecovery
+		case "codex":
+			report := codexadapter.CheckMCP(filepath.Join(home, ".codex", "config.toml"), "codex")
+			binary, configured, lifecycleAdapter, spoolRecovery = report.Binary, report.MCPConfigured, report.LifecycleAdapter, report.SpoolRecovery
+		default:
+			return fmt.Errorf("unsupported provider %q", name)
+		}
+		status := "unhealthy"
+		if binary && configured && lifecycleAdapter && spoolRecovery {
+			status = "healthy"
+		}
+		fmt.Printf("%s: %s (binary=%t mcp_configured=%t lifecycle_adapter=%t spool_recovery=%t)\n", name, status, binary, configured, lifecycleAdapter, spoolRecovery)
+	}
+	return nil
+}
+
 func printGeneralUsage() {
 	fmt.Println("kv - AI Development Harness")
 	fmt.Println()
@@ -1659,11 +2056,17 @@ func printGeneralUsage() {
 	fmt.Println()
 	fmt.Println("Available commands:")
 	fmt.Println("  tui                   Launch the interactive Terminal User Interface (default)")
+	fmt.Println("  mcp                   Start the KV MCP server over stdio")
+	fmt.Println("  mcp status|retry|reconcile|doctor  Administer global MCP state")
 	fmt.Println("  init [--vault <path>] Initialize workspace with .kv/config.yaml")
 	fmt.Println("  find <query>          Search files inside the active vault")
 	fmt.Println("  context build <workflow> <task-id>  Generate .opencode/context.md from context pack")
 	fmt.Println("  vault                 Manage Knowledge Vault connections and creation")
 	fmt.Println("  workspace             Manage workspace configuration (kv-workspace.yaml)")
+	fmt.Println("  change history        Show global OpenSpec change history")
+	fmt.Println("  memory search <query> Search global engineering memory")
+	fmt.Println("  data export|import    Exchange global session metadata and evidence-linked memory as JSON")
+	fmt.Println("  events retry          Retry due global lifecycle events")
 	fmt.Println("  app                   Manage workspace registered applications")
 	fmt.Println("  session               Manage multi-app development sessions")
 	fmt.Println("  boundary              Validate session boundaries")

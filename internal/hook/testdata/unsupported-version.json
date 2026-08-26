@@ -1,0 +1,1 @@
+{"schema_version":2,"event_id":"event-1","idempotency_key":"key-1","event":"provider.session_observed","occurred_at":"2026-08-17T12:00:00Z","provider":{"kind":"opencode","native_session_id":"session-1"},"workspace":{"cwd":"/workspace"}}

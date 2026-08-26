@@ -1,0 +1,1 @@
+{"schema_version":1,"event_id":"event-claude-1","idempotency_key":"claude/session-1/event-1","event":"openspec.before.propose","occurred_at":"2026-08-17T12:00:00Z","provider":{"kind":"claude-code","native_session_id":"session-1"},"workspace":{"cwd":"/workspace"},"subject":{"change_id":"add-hooks","operation":{"id":"op-1","kind":"propose"}}}

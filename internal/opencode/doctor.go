@@ -58,6 +58,11 @@ func Doctor() (bool, error) {
 		cmdPath := filepath.Join(configDir, "commands", filename)
 		check(fmt.Sprintf("commands/%s exists", filename), fsutil.IsFile(cmdPath))
 	}
+	mcp := CheckMCP(configDir, "kv")
+	check("KV binary discovered", mcp.Binary)
+	check("KV MCP configured", mcp.MCPConfigured)
+	check("KV lifecycle adapter available", mcp.LifecycleAdapter)
+	check("KV spool retry recovery available", mcp.SpoolRecovery)
 
 	fmt.Println()
 	if healthy {

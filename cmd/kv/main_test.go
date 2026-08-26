@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -11,6 +13,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kv/internal/hook"
+	"kv/internal/lifecycle"
+	"kv/internal/spool"
+	"kv/internal/store"
 )
 
 var binPath string
@@ -560,4 +567,163 @@ func TestKVCLIAllCommands(t *testing.T) {
 			t.Logf("TUI stderr output: %s", stderr)
 		}
 	})
+}
+
+func TestGlobalAdministrationCommands(t *testing.T) {
+	workspaceDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "global-data")
+	t.Setenv("KV_DATA_HOME", dataDir)
+
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(dataDir, "kv.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(ctx, filepath.Join(dataDir, "kv.db")); err != nil {
+		t.Fatal(err)
+	}
+	repository := store.NewRepository(database)
+	session, err := lifecycle.NewSessionService(repository).EnsureSession(ctx, workspaceDir, hook.ProviderIdentity{Kind: hook.ProviderOpenCode, NativeSessionID: "admin-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeID, err := repository.EnsureOpenSpecChange(ctx, session.Workspace.LogicalID, "admin-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionID, err := repository.CreateArtifactRevision(ctx, changeID, filepath.Join(workspaceDir, "proposal.md"), "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateTemporalMemory(ctx, session.Workspace.LogicalID, store.MemoryRecord{Kind: "decision", Status: "current", Summary: "use global administration", RevisionIDs: []string{revisionID}}); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := spool.Open(filepath.Join(dataDir, "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Enqueue(spool.Entry{Envelope: hook.HookEnvelope{SchemaVersion: hook.SchemaVersion, EventID: "admin-retry", IdempotencyKey: "admin-retry", Event: hook.EventSessionObserved, OccurredAt: time.Now().UTC(), Provider: hook.ProviderIdentity{Kind: hook.ProviderOpenCode, NativeSessionID: "retry-test"}, Workspace: hook.WorkspaceIdentity{CWD: workspaceDir}}, RetryAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		args string
+		want string
+	}{
+		{"mcp status", "Pending events: 1"},
+		{"workspace status", "Active sessions: 1"},
+		{"session list", "opencode"},
+		{"change history", "admin-change"},
+		{"memory search --change admin-change administration", "use global administration"},
+		{"mcp retry", "delivered=1"},
+		{"mcp reconcile --timeout 1ns", "Reconciled stale state"},
+		{"mcp doctor --provider all", "opencode:"},
+	} {
+		t.Run(test.args, func(t *testing.T) {
+			stdout, stderr, err := runKV(t, workspaceDir, strings.Fields(test.args)...)
+			if err != nil {
+				t.Fatalf("kv %s failed: %v; stderr=%s", test.args, err, stderr)
+			}
+			if !strings.Contains(stdout, test.want) {
+				t.Fatalf("kv %s output = %q, want %q", test.args, stdout, test.want)
+			}
+		})
+	}
+
+	t.Run("data export", func(t *testing.T) {
+		exportPath := filepath.Join(workspaceDir, "knowledge.json")
+		stdout, stderr, err := runKV(t, workspaceDir, "data", "export", "--file", exportPath)
+		if err != nil {
+			t.Fatalf("kv data export failed: %v; stderr=%s", err, stderr)
+		}
+		if !strings.Contains(stdout, "Exported global KV knowledge") {
+			t.Fatalf("export output = %q", stdout)
+		}
+		contents, err := os.ReadFile(exportPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]any
+		if err := json.Unmarshal(contents, &document); err != nil {
+			t.Fatal(err)
+		}
+		if document["schema_version"] != float64(1) || strings.Contains(string(contents), workspaceDir) {
+			t.Fatalf("invalid or non-portable export: %s", contents)
+		}
+	})
+
+	t.Run("data import rejects invalid evidence", func(t *testing.T) {
+		invalidPath := filepath.Join(workspaceDir, "invalid-knowledge.json")
+		invalid := `{"schema_version":1,"exported_at":"2026-01-01T00:00:00Z","workspace":{"identity":"git:example/invalid"},"sessions":[],"memories":[{"id":"m1","kind":"decision","status":"current","summary":"invalid","created_at":"2026-01-01T00:00:00Z","sources":[{"change_key":"change","artifact_path":"/absolute/path","revision_hash":"hash"}]}]}`
+		if err := os.WriteFile(invalidPath, []byte(invalid), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, err := runKV(t, workspaceDir, "data", "import", "--file", invalidPath)
+		if err == nil || !strings.Contains(stderr, "invalid evidence source") {
+			t.Fatalf("invalid import err=%v stderr=%q", err, stderr)
+		}
+	})
+}
+
+func TestGlobalStoreDoesNotMixLegacyWorkspaceState(t *testing.T) {
+	workspaceDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "global-data")
+	t.Setenv("KV_DATA_HOME", dataDir)
+
+	for _, args := range [][]string{
+		{"init"},
+		{"session", "init", "--id", "legacy-session", "--goal", "preserve legacy session"},
+		{"workflow", "new", "legacy-workflow"},
+	} {
+		stdout, stderr, err := runKV(t, workspaceDir, args...)
+		if err != nil {
+			t.Fatalf("kv %s failed: %v; stdout=%s stderr=%s", strings.Join(args, " "), err, stdout, stderr)
+		}
+	}
+
+	legacySession := filepath.Join(workspaceDir, ".kv", "sessions", "legacy-session", "session.yaml")
+	legacyWorkflow := filepath.Join(workspaceDir, ".kv", "workflows", "legacy-workflow", "idea.md")
+	sessionBefore, err := os.ReadFile(legacySession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyWorkflow); err != nil {
+		t.Fatalf("legacy workflow was not created: %v", err)
+	}
+
+	stdout, stderr, err := runKV(t, workspaceDir, "mcp", "status")
+	if err != nil || !strings.Contains(stdout, "MCP status: ready") {
+		t.Fatalf("kv mcp status failed: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	_, stderr, err = runKV(t, workspaceDir, "workspace", "status")
+	if err == nil || !strings.Contains(stderr, "no global KV workspace record") {
+		t.Fatalf("legacy state was treated as global workspace state: err=%v stderr=%s", err, stderr)
+	}
+
+	database, err := store.Open(context.Background(), filepath.Join(dataDir, "kv.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var workspaces, sessions int
+	if err := database.DB.QueryRow("SELECT COUNT(*) FROM workspaces").Scan(&workspaces); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.QueryRow("SELECT COUNT(*) FROM provider_sessions").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if workspaces != 0 || sessions != 0 {
+		t.Fatalf("global store implicitly imported legacy state: workspaces=%d sessions=%d", workspaces, sessions)
+	}
+
+	sessionAfter, err := os.ReadFile(legacySession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sessionBefore, sessionAfter) {
+		t.Fatal("global administration modified the legacy session")
+	}
 }

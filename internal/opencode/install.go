@@ -21,6 +21,15 @@ func Install() error {
 	if err := fsutil.EnsureDir(configDir); err != nil {
 		return fmt.Errorf("failed to create config directory %s: %v", configDir, err)
 	}
+	installedMCP, err := InstallMCP(configDir, "kv")
+	if err != nil {
+		return fmt.Errorf("failed to install KV MCP server: %v", err)
+	}
+	if installedMCP {
+		fmt.Println("[MERGE] KV MCP server")
+	} else {
+		fmt.Println("[SKIP] KV MCP server (already configured)")
+	}
 
 	// 1. opencode.json (does not overwrite or backup if it already exists)
 	jsonPath := filepath.Join(configDir, "opencode.json")
@@ -72,5 +81,22 @@ func Install() error {
 	}
 
 	fmt.Println("\nOpenCode installation completed successfully.")
+	return nil
+}
+
+func Uninstall() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("could not resolve user home directory: %v", err)
+	}
+	removed, err := UninstallMCP(filepath.Join(home, ".config", "opencode"))
+	if err != nil {
+		return fmt.Errorf("failed to uninstall KV MCP server: %v", err)
+	}
+	if removed {
+		fmt.Println("[REMOVE] KV MCP server")
+	} else {
+		fmt.Println("[SKIP] KV MCP server (not configured)")
+	}
 	return nil
 }

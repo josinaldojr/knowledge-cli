@@ -1,0 +1,1 @@
+{"schema_version":1,"event_id":"event-claude-end","idempotency_key":"claude/session-1/end","event":"provider.session_finished","occurred_at":"2026-08-17T12:30:00Z","provider":{"kind":"claude-code","native_session_id":"session-1"},"workspace":{"cwd":"/workspace"}}

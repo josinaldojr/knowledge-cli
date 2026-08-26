@@ -1,0 +1,8 @@
+{
+  "scenario": "propose to archive genealogy",
+  "operations": ["propose", "artifact_update", "apply", "archive"],
+  "expected": {
+    "each_transformation_has": ["workspace", "provider_session", "change", "operation", "artifact_revisions"],
+    "archive_preserves_transformation_history": true
+  }
+}

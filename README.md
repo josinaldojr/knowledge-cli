@@ -1,12 +1,25 @@
-# kv - AI Development Harness (Vault-Native)
+# kv - Automatic MCP Engineering Memory
 
-O `kv` é uma ferramenta CLI local-first e markdown-first escrita em Go que funciona como um harness de desenvolvimento assistido por IA. Ele permite orquestrar contexto, gerenciar workflows versionáveis, estruturar tasks com schemas baseados em frontmatter YAML, compilar context packs enriquecidos e integrar execuções diretamente com runners (como o **OpenCode**).
+`kv` is a local stdio MCP server for evidence-backed engineering memory. It observes OpenSpec operations, records only verified changes to OpenSpec artifacts, and returns relevant decisions, constraints, risks, and history to the connected provider. The normal MCP workflow needs no `kv init` and creates no `.kv` files in the observed repository.
 
-Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) compartilhado para cruzar decisões de arquitetura (ADRs), runbooks e padrões organizacionais com o código fonte do repositório local.
+KV discovers the workspace from the provider working directory and keeps its operational SQLite database, snapshots, and retry spool in global user storage. OpenSpec remains canonical: KV does not edit proposals, designs, specs, tasks, or archives. It does not store transcripts, chain of thought, arbitrary conversation, or non-OpenSpec files.
+
+The project-local harness, Vault, session, workflow, task, and Wiki commands remain available as legacy functionality. They are separate from MCP memory; see [Legacy CLI status](#legacy-cli-status).
 
 ---
 
-## Recursos Principais
+## MCP Engineering Memory
+
+- **Automatic sessions:** a provider session is registered on its first valid lifecycle event, using a native session ID when available or an adapter correlation ID otherwise.
+- **Verified OpenSpec history:** before/after hooks capture resolved OpenSpec artifacts, calculate structural deltas, and retain evidence-linked memory.
+- **Scoped assistance:** retrieval is limited to the logical workspace by default and ranks current decisions over superseded history.
+- **Reliable degradation:** unavailable MCP assistance does not block provider work. Recordable lifecycle events are spooled locally and can be retried.
+
+See [automatic MCP memory](docs/automatic-mcp-memory.md) for storage, privacy, limits, administration, and troubleshooting. See the [provider capability matrix](docs/provider-capability-matrix.md) for current provider support boundaries.
+
+---
+
+## Recursos Legados
 
 - **Vault-Native & Local-First**: Toda a configuração do workspace e dos workflows é versionável pelo Git (markdown-first).
 - **Workspace Config (`kv-workspace.yaml`)**: Declara e centraliza o mapeamento de múltiplos microsserviços/aplicações no projeto atual de forma declarativa.
@@ -18,17 +31,60 @@ Esta ferramenta se conecta a um **Knowledge Vault** (Cofre de Conhecimento) comp
 
 ## Instalação
 
-Certifique-se de ter o Go instalado (versão 1.16 ou superior). No diretório do projeto, execute:
+KV requires Go 1.26.3 or later to build from this checkout. Install the binary where the provider can find `kv` on `PATH`:
+
+```bash
+go install ./cmd/kv
+```
+
+For a local build instead:
 
 ```bash
 go build -o kv ./cmd/kv
 ```
 
-Ou instale globalmente no seu sistema:
+### OpenCode
+
+OpenCode is the only provider with a KV CLI installer in this release:
 
 ```bash
-go install ./cmd/kv
+kv opencode install
+kv mcp doctor --provider opencode
 ```
+
+The installer merges a `kv` local stdio MCP entry into `~/.config/opencode/opencode.json` without replacing existing entries. Remove only that MCP entry with `kv opencode uninstall`.
+
+### Claude Code and Codex
+
+Claude Code and Codex adapters use the same `kv mcp` server, but this release does not expose CLI install or uninstall commands for them. Configure their MCP entry manually, preserving existing configuration, then verify it with:
+
+```bash
+kv mcp doctor --provider claude-code
+kv mcp doctor --provider codex
+```
+
+Claude Code is checked at `~/.claude/settings.json` for a `mcpServers.kv` entry. Codex is checked at `~/.codex/config.toml` for an `[mcp_servers.kv]` table. Both entries must launch `kv mcp`. Claude Code has a native-session adapter when its hook environment provides `CLAUDE_SESSION_ID`; Codex uses a process-lifetime correlation ID because no native session ID is assumed. Refer to the capability matrix before enabling lifecycle hooks.
+
+### MCP Administration and Troubleshooting
+
+```bash
+kv mcp status                         # data path, database, queued events
+kv mcp doctor --provider all          # binary and configuration checks
+kv events retry                       # deliver due queued lifecycle events
+kv mcp reconcile --timeout 24h        # mark inactive sessions/operations stale
+kv workspace status                   # current global workspace record
+kv session list                       # global provider sessions for this workspace
+kv change history                     # OpenSpec transformation history
+kv memory search "authentication"      # evidence-linked engineering memory
+```
+
+If the doctor reports `binary=false`, install `kv` on `PATH`. If it reports `mcp_configured=false`, run the OpenCode installer or add the provider's MCP entry manually. Pending events mean a provider could not obtain an MCP acknowledgement; retry them after the server/configuration is available.
+
+MCP requests and eligible OpenSpec snapshots are limited to 1 MiB. KV offers lexical local retrieval only, has no cross-machine synchronization, and does not capture arbitrary code changes or provider discussion. Archive consolidation is advisory and may report degraded assistance rather than blocking an OpenSpec archive.
+
+### Legacy CLI Status
+
+`kv init`, project-local `.kv` sessions and workflows, task memory drafts, direct Vault promotion, and the Wiki remain supported legacy workflows. They are not automatically imported into, read by, or written by the global MCP store. Use MCP memory for verified OpenSpec transformations; use the legacy commands when their project-local session, Vault, or curated Markdown workflow is required. There is no scheduled removal of legacy commands.
 
 ---
 
@@ -225,6 +281,24 @@ O `kv` oferece duas maneiras complementares para organizar a execução e os tes
 ---
 
 ## Outros Comandos Utilitários
+
+### Exportar ou Importar Memória Global
+
+O store MCP global pode ser transferido sem criar ou exigir `.kv/` no projeto. O
+formato JSON versionado contém metadados legíveis de sessões e memórias OpenSpec
+com suas fontes (change, path lógico e hash de revisão). IDs nativos do provider,
+paths absolutos, transcripts e conteúdo de snapshots não são exportados.
+
+```bash
+# Exporta somente o workspace global associado ao diretório atual.
+kv data export --file ./kv-knowledge.json
+
+# Valida todo o documento antes de importar para o store global local.
+kv data import --file ./kv-knowledge.json
+```
+
+O arquivo de exportação não é sobrescrito; escolha outro caminho para preservar
+um export existente.
 
 ### Busca no Vault
 Para fazer buscas textuais rápidas por arquivos markdown dentro do cofre de conhecimento configurado:

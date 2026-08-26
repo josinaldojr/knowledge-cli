@@ -1,0 +1,8 @@
+{
+  "scenario": "discussion without artifact changes",
+  "events": [
+    {"event": "provider.session_observed"},
+    {"event": "provider.session_finished"}
+  ],
+  "expected": {"session_metadata": true, "transformations": 0, "memories": 0}
+}
