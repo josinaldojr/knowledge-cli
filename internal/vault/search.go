@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"kv/internal/retrieval"
 )
 
 // SearchResult represents a document found in the vault matching a query.
@@ -101,19 +103,7 @@ func extractTitle(content string, fmTitle string, fileName string) string {
 }
 
 func scoreTokenMatches(content string, query string) int {
-	tokens := strings.Fields(strings.ToLower(query))
-	lowerContent := strings.ToLower(content)
-	score := 0
-
-	for _, token := range tokens {
-		if token == "" {
-			continue
-		}
-		count := strings.Count(lowerContent, token)
-		score += count * 10
-	}
-
-	return score
+	return retrieval.ScoreField(content, query, retrieval.FieldWeights{TokenCount: 10})
 }
 
 func extractSnippet(content string, query string) string {

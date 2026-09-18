@@ -4,10 +4,9 @@ package memory
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
-	"unicode"
 
+	"kv/internal/retrieval"
 	"kv/internal/store"
 )
 
@@ -41,7 +40,7 @@ func (r *Retriever) Retrieve(ctx context.Context, query Query) ([]Result, error)
 	if err != nil {
 		return nil, err
 	}
-	tokens := tokenize(query.Text)
+	tokens := retrieval.AlnumTokens(query.Text)
 	results := make([]Result, 0, len(candidates))
 	for _, candidate := range candidates {
 		score := 0
@@ -49,7 +48,7 @@ func (r *Retriever) Retrieve(ctx context.Context, query Query) ([]Result, error)
 		if sameChange {
 			score += 1000
 		}
-		matches := overlap(tokens, tokenize(candidate.Summary+" "+candidate.Kind+" "+candidate.ChangeKey+" "+candidate.ArtifactPath))
+		matches := retrieval.Overlap(tokens, retrieval.AlnumTokens(candidate.Summary+" "+candidate.Kind+" "+candidate.ChangeKey+" "+candidate.ArtifactPath))
 		if !sameChange && matches == 0 {
 			continue
 		}
@@ -84,22 +83,4 @@ func (r *Retriever) Retrieve(ctx context.Context, query Query) ([]Result, error)
 		results = results[:query.Limit]
 	}
 	return results, nil
-}
-func tokenize(value string) map[string]struct{} {
-	tokens := map[string]struct{}{}
-	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) }) {
-		if token != "" {
-			tokens[token] = struct{}{}
-		}
-	}
-	return tokens
-}
-func overlap(left, right map[string]struct{}) int {
-	count := 0
-	for token := range left {
-		if _, ok := right[token]; ok {
-			count++
-		}
-	}
-	return count
 }
