@@ -4,7 +4,7 @@
 
 KV discovers the workspace from the provider working directory and keeps its operational SQLite database, snapshots, and retry spool in global user storage. OpenSpec remains canonical: KV does not edit proposals, designs, specs, tasks, or archives. It does not store transcripts, chain of thought, arbitrary conversation, or non-OpenSpec files.
 
-The project-local harness, Vault, session, workflow, task, and Wiki commands remain available as legacy functionality. They are separate from MCP memory; see [Legacy CLI status](#legacy-cli-status).
+Separately from MCP memory, `kv` also ships a project-local **harness**: a control layer that declares what a coding agent may read/write, builds its context, runs it non-interactively inside those boundaries, validates the result with real test commands, and audits everything to an append-only log. See [Como o Harness Funciona](#como-o-harness-funciona) below, and [Legacy CLI status](#legacy-cli-status) for how it relates to MCP memory.
 
 ---
 
@@ -19,13 +19,43 @@ See [automatic MCP memory](docs/automatic-mcp-memory.md) for storage, privacy, l
 
 ---
 
-## Recursos Legados
+## Como o Harness Funciona
 
-- **Vault-Native & Local-First**: Toda a configuração do workspace e dos workflows é versionável pelo Git (markdown-first).
-- **Workspace Config (`kv-workspace.yaml`)**: Declara e centraliza o mapeamento de múltiplos microsserviços/aplicações no projeto atual de forma declarativa.
-- **Sessões Multi-App**: Permite criar sessões operacionais focadas em objetivos específicos, vinculando apenas as aplicações necessárias e delimitando o espaço físico de leitura/escrita do Agent (`boundary.allowed_paths`).
-- **Context Builder Enriquecido**: Compila o contexto geral da sessão, gerando manifestos JSON, árvores de arquivos recursivas com limites de profundidade e exclusão de pastas pesadas (como `node_modules`, `dist`, `.git`), e sugere arquivos candidatos a alteração por proximidade ao objetivo.
-- **Workflows e Tasks (Estruturados/Versionáveis)**: Organiza fluxos de trabalho sob `.kv/workflows/<slug>/`, gerando artefatos de governança (`idea.md`, `prd.md`, `techspec.md`) e gerenciando tarefas por meio de metadados em frontmatter YAML.
+O harness é a camada de controle que fica entre você e o agente de codificação (Claude Code, OpenCode ou Codex): ele declara o que o agente pode ler e escrever, monta o contexto que ele recebe, executa o agente sem interação manual, valida o resultado com testes reais (não com o julgamento de uma LLM) e audita tudo em um log append-only. Diferente da Memória MCP (automática, silenciosa, focada em OpenSpec), o harness é acionado explicitamente por você via CLI e produz artefatos versionáveis em Git sob `.kv/`.
+
+Toda execução — seja uma Sessão (`kv run`) ou uma Task de Workflow (`kv task run`/`kv workflow run`) — passa pelo mesmo pipeline:
+
+```
+kv-workspace.yaml        session.yaml                .kv/sessions/<id>/
+ (apps + stacks,   ──▶   (contrato da        ──▶      context.md
+  opcional)                sessão)                    opencode.md (prompt do runner)
+                                                              │
+                                                              ▼
+                                                    runner (opencode run /
+                                                     claude -p / codex exec)
+                                                              │
+                              ┌───────────────────────────────┼──────────────────────────┐
+                              ▼                                ▼                          ▼
+                       Policy Engine                    Quality Gates              Diff Summarizer
+                  (bloqueia comando perigoso,        (roda os comandos de       (resume o git diff
+                   .env, dependências, etc.)           teste/lint reais)         dos paths permitidos)
+                              │                                │                          │
+                              └───────────────────────────────┴──────────────────────────┘
+                                                              ▼
+                                            audit.jsonl (log append-only) + report.md
+```
+
+- **Workspace (`kv-workspace.yaml`)**: registro declarativo de quais aplicações existem no repositório/monorepo e em qual stack (`go.mod`, `package.json`, `pom.xml`, ...). Opcional para um projeto único — ver [Usando em Projetos e Workspaces](#usando-em-projetos-e-workspaces).
+- **Sessão (`session.yaml`)**: o contrato que a execução segue — quais apps estão envolvidas, qual Vault de conhecimento está associado, qual provider roda o agente (`agent.provider`: `opencode`, `claude-code` ou `codex`), quais caminhos são fisicamente permitidos/escritos/só-leitura (`boundary`), quais comandos validam o resultado (`quality.commands`) e quais restrições de segurança se aplicam (`policy`).
+- **Boundary físico**: antes e depois da execução, o `kv` confere via `git diff` real que nenhum arquivo fora de `allowed_paths`/`writable_paths` foi tocado, e rejeita a sessão se houver violação — isso não é uma instrução no prompt, é uma checagem contra o estado real do repositório.
+- **Context Builder**: compila o objetivo, os arquivos candidatos (por proximidade ao objetivo) e as diretrizes do Vault em `context.md` e no prompt específico do runner (`opencode.md`), respeitando o orçamento de contexto (`agent.context_budget`).
+- **Runner**: executa o agente de forma não-interativa dentro dos boundaries — `opencode run`, `claude -p` (Claude Code) ou `codex exec` (Codex), conforme `agent.provider`.
+- **Policy Engine**: durante os Quality Gates, intercepta comandos perigosos (`rm -rf`, `sudo`), leitura de `.env`, instalação de dependências, migrações e uso de Docker, bloqueando ou pedindo confirmação conforme `policy.*` no contrato da sessão.
+- **Quality Gates**: roda de fato os comandos de teste/lint inferidos da stack (ex: `go test ./...`, `npm test`) — o critério de sucesso é o exit code do comando, não a opinião de uma LLM sobre o código.
+- **Diff Summarizer**: resume o `git diff` restrito aos paths permitidos da sessão: arquivos alterados, funções/testes novos, riscos de regressão.
+- **Auditoria e Relatório**: cada evento (criação, validação, boundary check, execução, quality gates) é gravado em `.kv/sessions/<id>/audit.jsonl` (append-only, nunca reescrito); `report.md` consolida tudo em um relatório final legível.
+
+O mesmo pipeline vale para Workflows/Tasks (`kv task run`, `kv workflow run`), mudando apenas a granularidade e a governança ao redor — ver [Comparativo: Sessões vs. Workflows](#comparativo-sessões-vs-workflows).
 
 ---
 
@@ -88,9 +118,82 @@ MCP requests and eligible OpenSpec snapshots are limited to 1 MiB. KV offers lex
 
 ---
 
+## Usando em Projetos e Workspaces
+
+O harness tem dois pontos de entrada para abrir uma sessão, dependendo se você está em um projeto único ou em um workspace com várias aplicações. Os dois produzem o mesmo `session.yaml` e seguem o mesmo pipeline descrito acima — a diferença é só como as apps são declaradas.
+
+| | `kv session init` | `kv session start` |
+| --- | --- | --- |
+| Exige `kv-workspace.yaml`? | Não — se não encontrar um em nenhum diretório pai, usa o diretório atual como raiz | Sim — as apps precisam estar registradas via `kv workspace scan`/`kv workspace init` |
+| Como aponta as apps | `--apps nome=caminho[,nome=caminho...]` (caminhos livres, qualquer nome) | `--apps <id>,<id>` (IDs já registrados no workspace) |
+| Quando usar | Projeto único, ajuste pontual, prototipagem rápida | Monorepo ou múltiplos serviços, sessões recorrentes que reaproveitam o mesmo registro de apps |
+
+### Projeto Único (sem workspace)
+
+Sem `kv-workspace.yaml`, `kv session init` funciona direto na raiz do projeto atual:
+
+```bash
+cd meu-projeto
+
+# 1. Cria a sessão apontando para o próprio projeto
+kv session init --id fix-login-bug --goal "Corrigir bug de sessão expirada no login" \
+  --apps meu-projeto=. --writable . --provider claude-code
+
+# 2. Valida os caminhos declarados no contrato
+kv session validate --session fix-login-bug
+
+# 3. Compila o contexto (context.md + opencode.md)
+kv context build --session fix-login-bug
+
+# 4. Confere em dry-run o que seria executado, sem rodar o agente
+kv run --session fix-login-bug --dry-run
+
+# 5. Executa de verdade: o agente só enxerga/altera o que está no boundary
+kv run --session fix-login-bug
+
+# 6. Relatório final: objetivo, boundary, quality gates e diff
+cat .kv/sessions/fix-login-bug/report.md
+```
+
+### Workspace Multi-App (monorepo ou múltiplos serviços)
+
+Quando o repositório contém várias aplicações — um monorepo, ou pastas irmãs de microsserviços — registre-as primeiro em um workspace:
+
+```bash
+cd meu-monorepo
+
+# 1. Cria o kv-workspace.yaml vazio (opcionalmente já associando um Vault)
+kv workspace init --vault ./vault
+
+# 2. Detecta automaticamente as apps por assinatura de stack (go.mod, package.json, ...)
+kv workspace scan
+
+# 3. Confere o que foi registrado (nome, ID, caminho, stack)
+kv workspace show
+```
+
+Os IDs gerados (ex: `api-payments`, `web-frontend`) são usados para abrir sessões que atravessam só as apps necessárias ao objetivo:
+
+```bash
+# 4. Abre a sessão vinculando apenas as apps envolvidas
+kv session start --goal "Sincronizar contrato de API entre payments e frontend" \
+  --apps api-payments,web-frontend --provider opencode
+
+# 5-9. o restante do fluxo é idêntico ao de um projeto único
+kv session validate --session <id-gerado>
+kv context build --session <id-gerado>
+kv run --session <id-gerado> --dry-run
+kv run --session <id-gerado>
+kv session report --session <id-gerado>
+```
+
+O `session start` mostra o ID gerado (`sess-<timestamp>-<hex>`) na saída de `Session started successfully!`; use-o nos comandos seguintes.
+
+---
+
 ## Guia de Uso: Multi-App & Sessões (MVP Completo)
 
-Abaixo, descrevemos o fluxo completo de ponta a ponta para inicializar um workspace, abrir sessões de desenvolvimento delimitadas por boundaries físicas e políticas de segurança, compilar o contexto, validar a execução automatizada com testes (quality gates) e gerar relatórios de progresso auditados.
+Referência detalhada de cada comando do pipeline acima (workspace, sessão, contexto, execução, quality gates, diff, relatório).
 
 ### Fluxo Básico de Execução (Ponta a Ponta)
 
