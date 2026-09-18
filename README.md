@@ -261,7 +261,7 @@ kv wiki link
 ```
 
 #### 3. Consultar a Wiki via Linha de Comando (`kv wiki ask`)
-Pesquisa na Wiki local por correspondência de termos e monta um contexto rico para a LLM responder à sua pergunta citando os arquivos de origem.
+Pesquisa na Wiki local (busca híbrida: BM25 léxico + similaridade semântica via embeddings locais, com fallback automático para léxico puro quando o embedder não está disponível) e monta um contexto rico para a LLM responder à sua pergunta citando os arquivos de origem. Veja [docs/hybrid-retrieval.md](docs/hybrid-retrieval.md) para setup do modelo local e o status de validação.
 ```bash
 kv wiki ask "Como funciona a autenticação JWT?"
 ```
