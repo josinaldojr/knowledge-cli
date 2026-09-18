@@ -213,8 +213,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Search top 4 documents for RAG context
-	searchResults := SearchIndex(index, req.Query, 4)
+	// 1. Search top 4 documents for RAG context, combining lexical (BM25)
+	// and, when available, local semantic ranking.
+	searchResults := HybridSearchIndex(index, req.Query, 4, DefaultEmbedder())
 	var contextChunks []string
 	for _, r := range searchResults {
 		relPath, _ := filepath.Rel(s.VaultPath, r.Entry.Path)

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"kv/internal/retrieval"
 	"kv/internal/vault"
 )
 
@@ -98,46 +99,16 @@ func SearchIndex(index []IndexEntry, query string, topN int) []SearchResult {
 		return nil
 	}
 
-	queryLower := strings.ToLower(query)
-	queryTokens := strings.Fields(queryLower)
-
 	var scoredResults []SearchResult
 
 	for _, entry := range index {
-		score := 0
-
-		titleLower := strings.ToLower(entry.Title)
-		contentLower := strings.ToLower(entry.Content)
-
-		// 1. Exact phrase matches (highest priority)
-		if strings.Contains(titleLower, queryLower) {
-			score += 150
-		}
-		if strings.Contains(contentLower, queryLower) {
-			score += 50
-		}
-
-		// 2. Token matches
-		for _, token := range queryTokens {
-			if len(token) < 2 {
-				continue // Skip extremely short tokens like single letters
-			}
-
-			// Token match in Title
-			if strings.Contains(titleLower, token) {
-				score += 40
-			}
-
-			// Token match in Tags
-			for _, tag := range entry.Tags {
-				if strings.Contains(strings.ToLower(tag), token) {
-					score += 30
-				}
-			}
-
-			// Token match in Content
-			count := strings.Count(contentLower, token)
-			score += count * 5
+		// 1. Exact phrase match in title/content (highest priority), plus
+		// 2. per-token matches in title, tags, and content. Single-letter
+		// tokens are skipped to avoid spurious matches.
+		score := retrieval.ScoreField(entry.Title, query, retrieval.FieldWeights{PhraseMatch: 150, TokenHit: 40, MinTokenLength: 2})
+		score += retrieval.ScoreField(entry.Content, query, retrieval.FieldWeights{PhraseMatch: 50, TokenCount: 5, MinTokenLength: 2})
+		for _, tag := range entry.Tags {
+			score += retrieval.ScoreField(tag, query, retrieval.FieldWeights{TokenHit: 30, MinTokenLength: 2})
 		}
 
 		if score > 0 {

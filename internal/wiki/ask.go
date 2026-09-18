@@ -14,8 +14,9 @@ func AskWiki(vaultPath string, client *Client, query string) (string, error) {
 		return "", fmt.Errorf("failed to build wiki index: %v", err)
 	}
 
-	// 1. Search top 4 related files
-	searchResults := SearchIndex(index, query, 4)
+	// 1. Search top 4 related files, combining lexical (BM25) and, when
+	// available, local semantic ranking.
+	searchResults := HybridSearchIndex(index, query, 4, DefaultEmbedder())
 
 	var contextChunks []string
 	var sources []string

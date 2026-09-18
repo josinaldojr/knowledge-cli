@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-isatty v0.0.24
+	github.com/yalue/onnxruntime_go v1.36.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )

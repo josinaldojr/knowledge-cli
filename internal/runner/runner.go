@@ -35,16 +35,31 @@ type AgentRunner interface {
 	Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error)
 }
 
-// OpenCodeRunner is the implementation of AgentRunner for OpenCode.
-type OpenCodeRunner struct {
-	WorkspaceDir string
-	Model        string
+// cliAgentSpec describes how to invoke a provider's non-interactive CLI. Every
+// supported provider (OpenCode, Claude Code, Codex) implements AgentRunner by
+// filling in this spec and delegating to runCLIAgent, so the boundary check,
+// dry-run summary, quality gates, diff summary, and session report stay
+// identical across providers.
+type cliAgentSpec struct {
+	// Label is the human-readable provider name used in output messages.
+	Label string
+	// Binary is the executable invoked on PATH (e.g. "opencode", "claude", "codex").
+	Binary string
+	// Doctor reports whether the provider CLI looks usable. A false/degraded
+	// result only produces a warning; it never blocks execution.
+	Doctor func() (bool, error)
+	// ValidateAgent optionally checks that a named sub-agent exists before
+	// running. Providers without an agent registry leave this nil.
+	ValidateAgent func(workspaceDir, agentName string) (bool, error)
+	// BuildArgs builds the CLI arguments for a non-interactive run.
+	BuildArgs func(promptContent, agentName, model string) []string
 }
 
-// Run executes the OpenCode agent flow.
-func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error) {
+// runCLIAgent implements the shared AgentRunner flow for any provider CLI
+// that can be driven non-interactively with a prompt string.
+func runCLIAgent(spec cliAgentSpec, workspaceDir, model string, sess *session.Session, promptPath, agentName string, dryRun bool) (*AgentRunResult, error) {
 	// 1. Boundary check before starting
-	boundaryReport, err := boundary.ValidateSession(r.WorkspaceDir, sess, true)
+	boundaryReport, err := boundary.ValidateSession(workspaceDir, sess, true)
 	if err != nil {
 		return nil, fmt.Errorf("pre-run boundary validation failed: %w", err)
 	}
@@ -53,7 +68,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 	}
 
 	if dryRun {
-		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "dry_run", map[string]interface{}{
+		_ = session.LogEvent(workspaceDir, sess.ID, "dry_run", map[string]interface{}{
 			"status": "passed",
 		})
 
@@ -61,18 +76,19 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 		fmt.Println()
 		fmt.Printf("Session:\n- %s\n\n", sess.ID)
 		fmt.Printf("Goal:\n- %s\n\n", sess.Goal)
+		fmt.Printf("Runner:\n- %s\n\n", spec.Label)
 		fmt.Println("Context files:")
 		fmt.Printf("- .kv/sessions/%s/context.md\n", sess.ID)
 		fmt.Printf("- .kv/sessions/%s/opencode.md\n\n", sess.ID)
 		fmt.Println("Allowed read paths:")
 		for _, p := range sess.Boundary.AllowedPaths {
-			rel, _ := filepath.Rel(r.WorkspaceDir, p)
+			rel, _ := filepath.Rel(workspaceDir, p)
 			fmt.Printf("- ./%s\n", rel)
 		}
 		fmt.Println()
 		fmt.Println("Allowed write paths:")
 		for _, p := range sess.Boundary.WritablePaths {
-			rel, _ := filepath.Rel(r.WorkspaceDir, p)
+			rel, _ := filepath.Rel(workspaceDir, p)
 			fmt.Printf("- ./%s\n", rel)
 		}
 		fmt.Println()
@@ -82,7 +98,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 		}
 		fmt.Println()
 
-		contextMDFile := filepath.Join(r.WorkspaceDir, ".kv", "sessions", sess.ID, "context.md")
+		contextMDFile := filepath.Join(workspaceDir, ".kv", "sessions", sess.ID, "context.md")
 		contextSizeStr := "0.0k tokens"
 		if data, err := ioutil.ReadFile(contextMDFile); err == nil {
 			tokens := len(data) / 4
@@ -97,17 +113,21 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 		}, nil
 	}
 
-	// 2. Log opencode started
-	_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_started", nil)
+	// 2. Log agent started
+	_ = session.LogEvent(workspaceDir, sess.ID, spec.Binary+"_started", nil)
 
-	// Verify opencode doctor
-	healthy, doctorErr := opencode.Doctor()
-	if doctorErr != nil || !healthy {
-		fmt.Println("Warning: OpenCode configuration seems unhealthy. Run 'kv opencode doctor' or 'kv opencode install' to fix.")
+	// Verify the provider CLI looks usable. A failed/unavailable check never
+	// blocks the run; it only surfaces a warning, matching the tolerant
+	// degradation behavior documented for provider adapters.
+	if spec.Doctor != nil {
+		healthy, doctorErr := spec.Doctor()
+		if doctorErr != nil || !healthy {
+			fmt.Printf("Warning: %s CLI ('%s') was not found or is not configured. Install it and ensure it's on PATH before running.\n", spec.Label, spec.Binary)
+		}
 	}
 
 	// 3. Execution prompt notification
-	fmt.Printf("\nExecuting OpenCode agent for session '%s'...\n", sess.ID)
+	fmt.Printf("\nExecuting %s agent for session '%s'...\n", spec.Label, sess.ID)
 	fmt.Printf("Agent prompt loaded from: %s\n", promptPath)
 	fmt.Println("The agent will automatically perform changes inside your workspace allowed paths:")
 	for _, p := range sess.Boundary.WritablePaths {
@@ -117,7 +137,7 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 	// Read prompt file content
 	promptBytes, err := ioutil.ReadFile(promptPath)
 	if err != nil {
-		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
+		_ = session.LogEvent(workspaceDir, sess.ID, spec.Binary+"_finished", map[string]interface{}{
 			"status": "failed",
 			"error":  fmt.Sprintf("failed to read prompt file: %v", err),
 		})
@@ -125,9 +145,9 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 	}
 	promptContent := string(promptBytes)
 
-	// Validate agent name
-	if agentName != "" {
-		defined, err := opencode.IsAgentDefined(r.WorkspaceDir, agentName)
+	// Validate agent name, when the provider supports named sub-agents.
+	if agentName != "" && spec.ValidateAgent != nil {
+		defined, err := spec.ValidateAgent(workspaceDir, agentName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to validate agent '%s': %w", agentName, err)
 		}
@@ -136,54 +156,36 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 		}
 	}
 
-	// Execute opencode run
-	var args []string
-	args = append(args, "run")
-	if agentName != "" {
-		args = append(args, "--agent", agentName)
-	}
-	if r.Model != "" {
-		args = append(args, "-m", r.Model)
-	}
-	args = append(args, promptContent)
-
-	cmd := RunCommandOverride("opencode", args...)
-	cmd.Dir = r.WorkspaceDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
-
-	err = RunCommandWithProgress(cmd)
-	if err != nil {
-		_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
+	args := spec.BuildArgs(promptContent, agentName, model)
+	if err := execProviderCLI(workspaceDir, spec.Binary, args); err != nil {
+		_ = session.LogEvent(workspaceDir, sess.ID, spec.Binary+"_finished", map[string]interface{}{
 			"status": "failed",
 			"error":  err.Error(),
 		})
-		return nil, fmt.Errorf("opencode execution failed: %w", err)
+		return nil, fmt.Errorf("%s execution failed: %w", spec.Label, err)
 	}
 
-	_ = session.LogEvent(r.WorkspaceDir, sess.ID, "opencode_finished", map[string]interface{}{
+	_ = session.LogEvent(workspaceDir, sess.ID, spec.Binary+"_finished", map[string]interface{}{
 		"status": "success",
 	})
 
 	// 4. Quality Gates
 	fmt.Println("\nRunning Quality Gates...")
-	qualityResults, qualityPassed, err := quality.RunQualityGates(r.WorkspaceDir, sess)
+	qualityResults, qualityPassed, err := quality.RunQualityGates(workspaceDir, sess)
 	if err != nil {
 		return nil, fmt.Errorf("quality gates execution failed: %w", err)
 	}
 
 	// 5. Diff Summarizer
 	fmt.Println("\nGenerating Diff Summary...")
-	_, err = diff.GenerateDiffSummary(r.WorkspaceDir, sess)
+	_, err = diff.GenerateDiffSummary(workspaceDir, sess)
 	if err != nil {
 		fmt.Printf("Warning: failed to generate diff summary: %v\n", err)
 	}
 
 	// 6. Session Report
 	fmt.Println("\nGenerating Session Report...")
-	err = report.GenerateSessionReport(r.WorkspaceDir, sess, qualityResults, qualityPassed)
+	err = report.GenerateSessionReport(workspaceDir, sess, qualityResults, qualityPassed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate session report: %w", err)
 	}
@@ -193,6 +195,123 @@ func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName
 		Success: qualityPassed,
 		Output:  "Agent run finished successfully.",
 	}, nil
+}
+
+// execProviderCLI runs a provider binary inside workspaceDir, streaming its
+// stdio and printing a periodic progress heartbeat.
+func execProviderCLI(workspaceDir, binary string, args []string) error {
+	cmd := RunCommandOverride(binary, args...)
+	cmd.Dir = workspaceDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = os.Environ()
+	return RunCommandWithProgress(cmd)
+}
+
+// binaryOnPath reports whether name is resolvable on PATH. It is the doctor
+// check for providers that need nothing beyond the executable itself.
+func binaryOnPath(name string) (bool, error) {
+	_, err := exec.LookPath(name)
+	return err == nil, nil
+}
+
+func opencodeArgs(promptContent, agentName, model string) []string {
+	args := []string{"run"}
+	if agentName != "" {
+		args = append(args, "--agent", agentName)
+	}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	args = append(args, promptContent)
+	return args
+}
+
+func claudeCodeArgs(promptContent, _, model string) []string {
+	// "-p" runs Claude Code non-interactively ("print mode"): it executes the
+	// prompt to completion and exits instead of opening an interactive session.
+	args := []string{"-p", promptContent}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
+}
+
+func codexArgs(promptContent, _, model string) []string {
+	// "exec" is the Codex CLI's non-interactive automation entry point.
+	args := []string{"exec", promptContent}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
+}
+
+// OpenCodeRunner is the AgentRunner implementation for OpenCode.
+type OpenCodeRunner struct {
+	WorkspaceDir string
+	Model        string
+}
+
+func (r *OpenCodeRunner) Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error) {
+	spec := cliAgentSpec{
+		Label:         "OpenCode",
+		Binary:        "opencode",
+		Doctor:        opencode.Doctor,
+		ValidateAgent: opencode.IsAgentDefined,
+		BuildArgs:     opencodeArgs,
+	}
+	return runCLIAgent(spec, r.WorkspaceDir, r.Model, sess, promptPath, agentName, dryRun)
+}
+
+// ClaudeCodeRunner is the AgentRunner implementation for Claude Code, driven
+// through the `claude` CLI in non-interactive print mode.
+type ClaudeCodeRunner struct {
+	WorkspaceDir string
+	Model        string
+}
+
+func (r *ClaudeCodeRunner) Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error) {
+	spec := cliAgentSpec{
+		Label:     "Claude Code",
+		Binary:    "claude",
+		Doctor:    func() (bool, error) { return binaryOnPath("claude") },
+		BuildArgs: claudeCodeArgs,
+	}
+	return runCLIAgent(spec, r.WorkspaceDir, r.Model, sess, promptPath, agentName, dryRun)
+}
+
+// CodexRunner is the AgentRunner implementation for Codex, driven through the
+// `codex exec` non-interactive CLI entry point.
+type CodexRunner struct {
+	WorkspaceDir string
+	Model        string
+}
+
+func (r *CodexRunner) Run(sess *session.Session, promptPath string, agentName string, dryRun bool) (*AgentRunResult, error) {
+	spec := cliAgentSpec{
+		Label:     "Codex",
+		Binary:    "codex",
+		Doctor:    func() (bool, error) { return binaryOnPath("codex") },
+		BuildArgs: codexArgs,
+	}
+	return runCLIAgent(spec, r.WorkspaceDir, r.Model, sess, promptPath, agentName, dryRun)
+}
+
+// resolveRunner maps a provider identifier to its AgentRunner. Both
+// "claude-code" (the canonical name used elsewhere in kv, e.g. `kv mcp doctor
+// --provider claude-code`) and the bare "claude" binary name are accepted.
+func resolveRunner(provider, workspaceDir, model string) (AgentRunner, error) {
+	switch provider {
+	case "opencode", "":
+		return &OpenCodeRunner{WorkspaceDir: workspaceDir, Model: model}, nil
+	case "claude-code", "claude":
+		return &ClaudeCodeRunner{WorkspaceDir: workspaceDir, Model: model}, nil
+	case "codex":
+		return &CodexRunner{WorkspaceDir: workspaceDir, Model: model}, nil
+	default:
+		return nil, fmt.Errorf("unsupported agent provider: '%s'. Supported providers: opencode, claude-code, codex", provider)
+	}
 }
 
 // RunSession executes the session flow.
@@ -222,11 +341,9 @@ func RunSession(workspaceDir, sessionID, agentName string, dryRun bool, model st
 	}
 
 	// 4. Resolve runner and execute
-	var agentRunner AgentRunner
-	if sess.Agent.Provider == "opencode" || sess.Agent.Provider == "" {
-		agentRunner = &OpenCodeRunner{WorkspaceDir: workspaceDir, Model: model}
-	} else {
-		return fmt.Errorf("unsupported agent provider: '%s'", sess.Agent.Provider)
+	agentRunner, err := resolveRunner(sess.Agent.Provider, workspaceDir, model)
+	if err != nil {
+		return err
 	}
 
 	if agentName == "" {
@@ -286,58 +403,48 @@ func RunTask(workspaceDir, workflowSlug, taskID, runnerType, agentName string, m
 		}
 	}
 
+	var spec cliAgentSpec
 	switch runnerType {
 	case "opencode":
-		fmt.Printf("Executing task using runner: %s\n", runnerType)
-		if agentName != "" {
-			fmt.Printf("Using agent: %s\n", agentName)
-		}
-		// Check if opencode is installed/healthy
-		healthy, err := opencode.Doctor()
-		if err != nil || !healthy {
-			fmt.Println("Warning: OpenCode configuration seems unhealthy. Run 'kv opencode doctor' or 'kv opencode install' to fix.")
-		}
-
-		// Validate agent if specified
-		if agentName != "" {
-			defined, err := opencode.IsAgentDefined(workspaceDir, agentName)
-			if err != nil {
-				return fmt.Errorf("failed to validate agent '%s': %w", agentName, err)
-			}
-			if !defined {
-				return fmt.Errorf("agent '%s' is not defined in opencode.json. Please define it before running.", agentName)
-			}
-		}
-
-		promptContent := "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
-
-		var args []string
-		args = append(args, "run")
-		if agentName != "" {
-			args = append(args, "--agent", agentName)
-		}
-		if model != "" {
-			args = append(args, "-m", model)
-		}
-		args = append(args, promptContent)
-
-		cmd := RunCommandOverride("opencode", args...)
-		cmd.Dir = workspaceDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		cmd.Env = os.Environ()
-
-		if err := RunCommandWithProgress(cmd); err != nil {
-			return fmt.Errorf("opencode execution failed: %w", err)
-		}
-
-		fmt.Println("\nOpenCode Runner executed successfully.")
-		return nil
-
+		spec = cliAgentSpec{Label: "OpenCode", Binary: "opencode", Doctor: opencode.Doctor, ValidateAgent: opencode.IsAgentDefined, BuildArgs: opencodeArgs}
+	case "claude-code", "claude":
+		spec = cliAgentSpec{Label: "Claude Code", Binary: "claude", Doctor: func() (bool, error) { return binaryOnPath("claude") }, BuildArgs: claudeCodeArgs}
+	case "codex":
+		spec = cliAgentSpec{Label: "Codex", Binary: "codex", Doctor: func() (bool, error) { return binaryOnPath("codex") }, BuildArgs: codexArgs}
 	default:
-		return fmt.Errorf("unsupported runner type: '%s'. Supported runners: opencode", runnerType)
+		return fmt.Errorf("unsupported runner type: '%s'. Supported runners: opencode, claude-code, codex", runnerType)
 	}
+
+	fmt.Printf("Executing task using runner: %s\n", runnerType)
+	if agentName != "" {
+		fmt.Printf("Using agent: %s\n", agentName)
+	}
+
+	if spec.Doctor != nil {
+		healthy, err := spec.Doctor()
+		if err != nil || !healthy {
+			fmt.Printf("Warning: %s CLI ('%s') was not found or is not configured. Install it and ensure it's on PATH before running.\n", spec.Label, spec.Binary)
+		}
+	}
+
+	if agentName != "" && spec.ValidateAgent != nil {
+		defined, err := spec.ValidateAgent(workspaceDir, agentName)
+		if err != nil {
+			return fmt.Errorf("failed to validate agent '%s': %w", agentName, err)
+		}
+		if !defined {
+			return fmt.Errorf("agent '%s' is not defined in opencode.json. Please define it before running.", agentName)
+		}
+	}
+
+	promptContent := "Please read the task context file at `.opencode/context.md` and complete the task instructions described there."
+	args := spec.BuildArgs(promptContent, agentName, model)
+	if err := execProviderCLI(workspaceDir, spec.Binary, args); err != nil {
+		return fmt.Errorf("%s execution failed: %w", spec.Label, err)
+	}
+
+	fmt.Printf("\n%s Runner executed successfully.\n", spec.Label)
+	return nil
 }
 
 // RunCommandWithProgress executes a command and prints a periodic progress heartbeat.
@@ -354,7 +461,7 @@ func RunCommandWithProgress(cmd *exec.Cmd) error {
 				return
 			case <-ticker.C:
 				elapsed := time.Since(start).Round(time.Second)
-				fmt.Printf(" ⏳ [OpenCode] Running agents in parallel... (%s elapsed)\n", elapsed)
+				fmt.Printf(" ⏳ [%s] Running agents in parallel... (%s elapsed)\n", cmd.Args[0], elapsed)
 			}
 		}
 	}()

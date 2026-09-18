@@ -98,8 +98,8 @@ Abaixo, descrevemos o fluxo completo de ponta a ponta para inicializar um worksp
 # 1. Escanear o workspace para detectar aplicações e stacks
 kv workspace scan
 
-# 2. Inicializar o contrato de uma nova sessão
-kv session init --id session-auth-refactor --goal "Refatorar autenticação do serviço" --apps api-payments=./apps/api-payments --vault ./vault/auth --writable ./apps/api-payments
+# 2. Inicializar o contrato de uma nova sessão (--provider aceita opencode, claude-code ou codex; padrão: opencode)
+kv session init --id session-auth-refactor --goal "Refatorar autenticação do serviço" --apps api-payments=./apps/api-payments --vault ./vault/auth --writable ./apps/api-payments --provider claude-code
 
 # 3. Validar se as regras da sessão estão corretas (existência de caminhos, permissões, etc.)
 kv session validate --session session-auth-refactor
@@ -158,7 +158,8 @@ Analisa a integridade da configuração da sessão e garante que:
 Executa o fluxo da sessão utilizando o runner selecionado.
 - Com a flag `--dry-run`, exibe um resumo detalhado contendo tamanho estimado do contexto, boundaries de leitura/escrita configuradas, comandos de qualidade e status geral de validação sem executar o agente.
 - Em execução normal com o runner **OpenCode** (padrão), o `kv` realiza a validação de boundaries físicas, lê o conteúdo do prompt gerado em `.kv/sessions/<session-id>/opencode.md`, e **executa o comando `opencode run "<prompt>"`** herdando o terminal interativo.
-- **Seleção de Modelo**: Você pode especificar qual modelo deve ser executado no OpenCode usando a flag `--model <model>`. Se a flag for omitida e o terminal for interativo (TTY), o CLI exibirá um menu de seleção interativo para você escolher qual modelo do OpenCode deseja usar antes do início da execução.
+- **Seleção de Modelo**: Você pode especificar qual modelo deve ser executado usando a flag `--model <model>`. Se a flag for omitida, o runner for OpenCode e o terminal for interativo (TTY), o CLI exibirá um menu de seleção interativo para você escolher qual modelo do OpenCode deseja usar antes do início da execução.
+- **Provider do Agente**: o runner efetivamente usado é `sess.agent.provider` (definido em `kv session init/start --provider`). `opencode` (padrão) executa `opencode run`; `claude-code` executa `claude -p` (modo não-interativo); `codex` executa `codex exec`. Os três seguem o mesmo fluxo: validação de boundaries, Quality Gates, Diff Summarizer e relatório final.
 - Após a execução do agente, o `kv` roda os Quality Gates, o Diff Summarizer, audita os logs no arquivo append-only (`audit.jsonl`) e gera o relatório final.
 
 #### 5. Quality Gates (`kv quality run`)
@@ -198,9 +199,11 @@ kv context build feature-auth 002-add-login
 *Gera `.opencode/context.md` na raiz do projeto.*
 
 ### 4. Executar a Task
-Executa a task no runner selecionado. Quando integrado com o **OpenCode**, o `kv` executa `opencode run` instruindo o agente a ler o contexto gerado em `.opencode/context.md` e realizar as mudanças necessárias:
+Executa a task no runner selecionado (`--runner opencode|claude-code|codex`, padrão `opencode`), instruindo o agente a ler o contexto gerado em `.opencode/context.md` e realizar as mudanças necessárias:
 ```bash
 kv task run feature-auth 002-add-login --runner opencode [--model <model>]
+kv task run feature-auth 002-add-login --runner claude-code [--model <model>]
+kv task run feature-auth 002-add-login --runner codex [--model <model>]
 ```
 - **Seleção Interativa**: Se você omitir o slug do workflow ou o ID da task (ex: apenas `kv task run` ou `kv task enrich`), e estiver em um terminal interativo (TTY), o CLI exibirá um menu interativo para você selecionar o workflow e a task criada correspondente, além do modelo a ser executado.
 
@@ -209,6 +212,7 @@ Para rodar de ponta a ponta o fluxo de trabalho de 7 fases automatizado:
 ```bash
 kv workflow run feature-auth --prompt "Refatorar autenticação usando tokens JWT" [--model <model>]
 ```
+> `kv workflow run` ainda invoca exclusivamente o runner OpenCode em todas as 7 fases; `kv session`/`kv task run` já suportam `claude-code` e `codex` (ver seções 4 e "Execução Controlada" acima). Tornar o workflow de 7 fases agnóstico de provider é um trabalho maior, ainda não coberto nesta release.
 
 O executor de workflows orquestrará as seguintes fases sequencialmente utilizando o runner selecionado (ex: **OpenCode**):
 1. **Idea (Concepção)**: Cria a ideia básica em `idea.md`.
@@ -257,7 +261,7 @@ kv wiki link
 ```
 
 #### 3. Consultar a Wiki via Linha de Comando (`kv wiki ask`)
-Pesquisa na Wiki local por correspondência de termos e monta um contexto rico para a LLM responder à sua pergunta citando os arquivos de origem.
+Pesquisa na Wiki local (busca híbrida: BM25 léxico + similaridade semântica via embeddings locais, com fallback automático para léxico puro quando o embedder não está disponível) e monta um contexto rico para a LLM responder à sua pergunta citando os arquivos de origem. Veja [docs/hybrid-retrieval.md](docs/hybrid-retrieval.md) para setup do modelo local e o status de validação.
 ```bash
 kv wiki ask "Como funciona a autenticação JWT?"
 ```

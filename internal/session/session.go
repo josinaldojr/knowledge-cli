@@ -75,6 +75,16 @@ type Session struct {
 	Status       string          `yaml:"status"`
 }
 
+// normalizeProvider defaults an empty agent provider to "opencode". The
+// authoritative list of supported providers (opencode, claude-code, codex)
+// lives in internal/runner, which rejects an unsupported value at run time.
+func normalizeProvider(provider string) string {
+	if strings.TrimSpace(provider) == "" {
+		return "opencode"
+	}
+	return provider
+}
+
 // GenerateSessionID generates a unique ID for a session.
 // Format: sess-20060102-150405-<4 random hex chars>
 func GenerateSessionID() string {
@@ -86,7 +96,7 @@ func GenerateSessionID() string {
 }
 
 // InitSession creates a session based on explicit contract flags.
-func InitSession(workspaceDir string, id, goal string, appsMap map[string]string, vaultSources []string, writablePaths []string, agentName string) (*Session, error) {
+func InitSession(workspaceDir string, id, goal string, appsMap map[string]string, vaultSources []string, writablePaths []string, agentName, provider string) (*Session, error) {
 	if strings.TrimSpace(goal) == "" {
 		return nil, fmt.Errorf("session goal cannot be empty")
 	}
@@ -193,7 +203,7 @@ func InitSession(workspaceDir string, id, goal string, appsMap map[string]string
 			ReadonlyPaths: readonlyClean,
 		},
 		Agent: AgentContract{
-			Provider:      "opencode",
+			Provider:      normalizeProvider(provider),
 			Name:          agentName,
 			Mode:          "implementation",
 			ContextBudget: 12000,
@@ -221,7 +231,7 @@ func InitSession(workspaceDir string, id, goal string, appsMap map[string]string
 }
 
 // StartSession creates, validates, and initializes a new session. (Legacy compatible helper)
-func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal string, appIDs []string, agentName string) (*Session, error) {
+func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal string, appIDs []string, agentName, provider string) (*Session, error) {
 	if strings.TrimSpace(goal) == "" {
 		return nil, fmt.Errorf("session goal cannot be empty")
 	}
@@ -280,7 +290,7 @@ func StartSession(workspaceDir string, wsYaml *workspace.WorkspaceYaml, goal str
 			AllowedPaths: allowedPaths,
 		},
 		Agent: AgentContract{
-			Provider:      "opencode",
+			Provider:      normalizeProvider(provider),
 			Name:          agentName,
 			Mode:          "implementation",
 			ContextBudget: 12000,
