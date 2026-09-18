@@ -792,6 +792,7 @@ func main() {
 			vaultPtr := fs.String("vault", "", "Comma-separated list of vault sources")
 			writablePtr := fs.String("writable", "", "Comma-separated list of writable paths")
 			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
+			providerPtr := fs.String("provider", "opencode", "Agent provider to run this session: opencode, claude-code, or codex")
 
 			err := fs.Parse(os.Args[3:])
 			if err != nil {
@@ -853,7 +854,7 @@ func main() {
 				}
 			}
 
-			sess, err := session.InitSession(wsDir, *idPtr, *goalPtr, appsMap, vaultSources, writablePaths, *agentPtr)
+			sess, err := session.InitSession(wsDir, *idPtr, *goalPtr, appsMap, vaultSources, writablePaths, *agentPtr, *providerPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to initialize session: %v\n", err)
 				os.Exit(1)
@@ -878,6 +879,7 @@ func main() {
 			goalPtr := fs.String("goal", "", "Objective of the session")
 			appsPtr := fs.String("apps", "", "Comma-separated list of application IDs")
 			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
+			providerPtr := fs.String("provider", "opencode", "Agent provider to run this session: opencode, claude-code, or codex")
 
 			err := fs.Parse(os.Args[3:])
 			if err != nil {
@@ -913,7 +915,7 @@ func main() {
 				appIDs[i] = strings.TrimSpace(appIDs[i])
 			}
 
-			sess, err := session.StartSession(wsDir, ws, *goalPtr, appIDs, *agentPtr)
+			sess, err := session.StartSession(wsDir, ws, *goalPtr, appIDs, *agentPtr, *providerPtr)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to start session: %v\n", err)
 				os.Exit(1)
@@ -1341,7 +1343,7 @@ func main() {
 			}
 
 			fs := flag.NewFlagSet("task run", flag.ContinueOnError)
-			runnerPtr := fs.String("runner", "opencode", "Runner type (e.g. opencode)")
+			runnerPtr := fs.String("runner", "opencode", "Runner type: opencode, claude-code, or codex")
 			agentPtr := fs.String("agent", "", "Agent name to use (e.g. backend, frontend)")
 			modelPtr := fs.String("model", "", "Model to execute (e.g. opencode/deepseek-v4-flash-free)")
 			err := fs.Parse(restArgs)
